@@ -1,12 +1,38 @@
+// this file is the studio environment where users can create and script objects notice it does not run the created scripts, that is done in game.js so never add any running logic for scripts in here like collisions or touched events-
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as CANNON from 'cannon-es';
+import { ENGINE_VERSION, createVersionInfo, bustAssetUrl } from './version.js';
 
 console.log('RoGold Studio: studio.js loaded successfully');
 console.log('RoGold Studio: THREE available:', typeof THREE);
 console.log('RoGold Studio: OrbitControls available:', typeof OrbitControls);
+
+// ===== TEXTURE LOADING WITH CACHE BUSTING =====
+
+function loadTextureWithCacheBust(url, onLoad, onProgress, onError) {
+    const loader = new THREE.TextureLoader();
+    const cacheBustedUrl = bustAssetUrl(url);
+    console.log('[TEXTURE] Loading texture:', cacheBustedUrl);
+    
+    return loader.load(
+        cacheBustedUrl,
+        (texture) => {
+            console.log('[TEXTURE] Loaded successfully:', cacheBustedUrl);
+            if (onLoad) onLoad(texture);
+        },
+        (progress) => {
+            console.log('[TEXTURE] Loading progress:', cacheBustedUrl, progress);
+            if (onProgress) onProgress(progress);
+        },
+        (error) => {
+            console.warn('[TEXTURE] Failed to load:', cacheBustedUrl, error);
+            if (onError) onError(error);
+        }
+    );
+}
 
 // ===== PHYSICS BODY MANAGER =====
 
@@ -26,10 +52,15 @@ class PhysicsBodyManager {
         // Remove existing body if any
         this.destroyBody(instance);
 
+        // Use the intended part size for collision box to prevent floating
+        // The collision box should match the part's Size property, not the scaled visual size
+        const collisionSize = instance.Size.clone();
+        console.log(`[PHYSICS] Using collision size: ${collisionSize.toArray()} (from instance.Size)`);
+
         const shape = new CANNON.Box(new CANNON.Vec3(
-            instance.Size.x / 2,
-            instance.Size.y / 2,
-            instance.Size.z / 2
+            collisionSize.x / 2,
+            collisionSize.y / 2,
+            collisionSize.z / 2
         ));
 
         let bodyType = CANNON.Body.KINEMATIC;
@@ -68,7 +99,7 @@ class PhysicsBodyManager {
         // Set material properties
         const material = new CANNON.Material({
             friction: instance.Friction || 0.4,
-            restitution: instance.Restitution || 0.3
+            restitution: instance.Restitution || 0.05
         });
         body.material = material;
 
@@ -76,11 +107,11 @@ class PhysicsBodyManager {
         if (!instance.CanCollide) {
             body.collisionFilterGroup = 2; // Non-collidable group
             body.collisionFilterMask = 0; // Don't collide with anything
-            console.log(`[PHYSICS] Set collision filters: group=2, mask=0 (non-collidable)`);
+            console.log(`[PHYSICS] Set collision filters for ${instance.Name}: group=2, mask=0 (non-collidable)`);
         } else {
             body.collisionFilterGroup = 1; // Collidable group
             body.collisionFilterMask = -1; // Collide with everything
-            console.log(`[PHYSICS] Set collision filters: group=1, mask=-1 (collidable)`);
+            console.log(`[PHYSICS] Set collision filters for ${instance.Name}: group=1, mask=-1 (collidable)`);
         }
 
         this.physicsWorld.addBody(body);
@@ -99,10 +130,11 @@ class PhysicsBodyManager {
         body.position.copy(instance.threeObject.position);
         body.quaternion.copy(instance.threeObject.quaternion);
 
-        // Update shape if size changed
+        // Update shape if size changed - use instance.Size for accurate collision boxes
         if (body.shapes && body.shapes.length > 0) {
             const shape = body.shapes[0];
             if (shape instanceof CANNON.Box) {
+                const oldHalfExtents = shape.halfExtents.clone();
                 shape.halfExtents.set(
                     instance.Size.x / 2,
                     instance.Size.y / 2,
@@ -110,22 +142,25 @@ class PhysicsBodyManager {
                 );
                 body.updateBoundingRadius();
                 body.aabbNeedsUpdate = true;
+                console.log(`[PHYSICS] Updated collision box to match instance.Size: ${oldHalfExtents.toArray()} -> ${shape.halfExtents.toArray()}`);
             }
         }
 
         // Update material properties
         if (body.material) {
             body.material.friction = instance.Friction || 0.4;
-            body.material.restitution = instance.Restitution || 0.3;
+            body.material.restitution = instance.Restitution || 0.05;
         }
 
         // Set collision filters based on CanCollide property
         if (!instance.CanCollide) {
             body.collisionFilterGroup = 2; // Non-collidable group
             body.collisionFilterMask = 0; // Don't collide with anything
+            console.log(`[PHYSICS] Updated collision filters for ${instance.Name}: group=2, mask=0 (non-collidable)`);
         } else {
             body.collisionFilterGroup = 1; // Collidable group
             body.collisionFilterMask = -1; // Collide with everything
+            console.log(`[PHYSICS] Updated collision filters for ${instance.Name}: group=1, mask=-1 (collidable)`);
         }
 
         // Update body type and mass
@@ -202,7 +237,7 @@ class RobloxInstance {
         // Physics properties
         this.Mass = 1;
         this.Friction = 0.4;
-        this.Restitution = 0.3;
+        this.Restitution = 0.05;
 
         // Event connections
         this.touchedConnections = [];
@@ -284,7 +319,7 @@ class RobloxInstance {
 let scene, camera, renderer, controls;
 let audioListener;
 let luaObjects = {};
-let currentTab = 'script';
+let currentTab = 'viewport';
 let selectedToolboxItem = null;
 let isPlacingPart = false;
 let selectedObjects = new Set();
@@ -427,7 +462,7 @@ function initStudio() {
 
     // Check if required DOM elements exist
     const requiredElements = [
-        'play-btn', 'stop-btn', 'save-btn', 'load-btn', 'back-btn',
+        'test-physics-btn', 'save-btn', 'load-btn', 'back-btn',
         'viewport-canvas', 'output-panel'
     ];
 
@@ -446,12 +481,32 @@ function initStudio() {
     // Initialize 3D scene for viewport
     initViewport3D();
 
+    // Check for URL parameters to load a specific game
+    const urlParams = new URLSearchParams(window.location.search);
+    const gameId = urlParams.get('game');
+    if (gameId) {
+        console.log(`RoGold Studio: Loading game from URL parameter: ${gameId}`);
+        loadGameFromURL(gameId);
+    }
+
     // Set initial tab
     switchTab('viewport');
 
 
     // Set default tool to move so gizmos appear when selecting objects
     switchToTool('move');
+
+    // Add event listener for workspace folder expand/collapse
+    const workspaceFolder = document.querySelector('.workspace-folder');
+    if (workspaceFolder) {
+        const expandArrow = workspaceFolder.querySelector('.expand-arrow');
+        if (expandArrow) {
+            expandArrow.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleExpanded(workspaceFolder);
+            });
+        }
+    }
 
     console.log('RoGold Studio: Studio initialization complete');
 }
@@ -625,13 +680,9 @@ function setupViewportInteraction() {
         mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-        // Check for gizmo interaction first - only check handles whose parent gizmo is visible
+        // Check for gizmo interaction first - consider all handles regardless of parent visibility
         raycaster.setFromCamera(mouse, camera);
-        const validHandles = gizmoHandles.filter(h => {
-            if (!h || !h.handle || !h.handle.parent) return false;
-            // Check if the handle's parent gizmo is visible
-            return h.handle.parent.visible === true;
-        }).map(h => h.handle);
+        const validHandles = gizmoHandles.filter(h => h && h.handle && transformMode && h.type === transformMode).map(h => h.handle);
         const gizmoIntersects = raycaster.intersectObjects(validHandles, true);
 
         if (gizmoIntersects.length > 0) {
@@ -667,15 +718,42 @@ function setupViewportInteraction() {
         }
 
         if (selectedObject) {
-            clearObjectSelection();
-            selectedObjects.add(selectedObject);
-            if (selectedObject.threeObject) {
-                selectedObject.threeObject.material.emissive = new THREE.Color(0x444400);
+            // Handle multi-selection with Shift key
+            if (event.shiftKey) {
+                // Toggle selection for this object
+                if (selectedObjects.has(selectedObject)) {
+                    // Remove from selection
+                    selectedObjects.delete(selectedObject);
+                    if (selectedObject.threeObject) {
+                        selectedObject.threeObject.material.emissive = new THREE.Color(0x000000);
+                    }
+                    addOutput(`Removed ${selectedObject.Name} from selection`, 'info');
+                } else {
+                    // Add to selection (skip SpawnPoint)
+                    if (selectedObject.Name !== 'SpawnPoint') {
+                        selectedObjects.add(selectedObject);
+                        if (selectedObject.threeObject) {
+                            selectedObject.threeObject.material.emissive = new THREE.Color(0x444400);
+                        }
+                    }
+                    addOutput(`Added ${selectedObject.Name} to selection`, 'info');
+                }
+            } else {
+                // Single selection (normal behavior)
+                clearObjectSelection();
+                // Skip selecting SpawnPoint
+                if (selectedObject.Name !== 'SpawnPoint') {
+                    selectedObjects.add(selectedObject);
+                    if (selectedObject.threeObject) {
+                        selectedObject.threeObject.material.emissive = new THREE.Color(0x444400);
+                    }
+                    addOutput(`Selected ${selectedObject.Name}`, 'success');
+                }
             }
             updateGizmoVisibility();
             updatePropertiesPanel();
-            addOutput(`Selected ${selectedObject.Name}`, 'success');
-        } else {
+        } else if (!event.shiftKey) {
+            // Only clear selection if not holding Shift and clicking empty space
             clearObjectSelection();
         }
     });
@@ -708,7 +786,7 @@ function setupViewportInteraction() {
 
 function createBaseplate() {
     const textureLoader = new THREE.TextureLoader();
-    const studsTexture = textureLoader.load('studs.png');
+    const studsTexture = textureLoader.load('imgs/studs.png');
     studsTexture.wrapS = THREE.RepeatWrapping;
     studsTexture.wrapT = THREE.RepeatWrapping;
     studsTexture.repeat.set(128, 128);
@@ -722,67 +800,249 @@ function createBaseplate() {
 
     // Create physics body for baseplate collision
     if (RobloxEnvironment.physicsWorld) {
-        console.log('[PHYSICS] Creating static plane body for baseplate');
-        const planeShape = new CANNON.Plane();
-        const planeBody = new CANNON.Body({
+        console.log('[PHYSICS] Creating static box body for baseplate');
+        const boxShape = new CANNON.Box(new CANNON.Vec3(250, 0.5, 250)); // Large box for ground
+        const boxBody = new CANNON.Body({
             type: CANNON.Body.STATIC,
-            shape: planeShape
+            shape: boxShape
         });
 
         // Position at ground level
-        planeBody.position.set(0, 0, 0);
-
-        // Rotate to make normal point up (horizontal plane for floor collision)
-        planeBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+        boxBody.position.set(0, -0.5, 0); // Position below the visual baseplate
 
         // Set material properties matching parts
         const material = new CANNON.Material({
             friction: 0.4,
             restitution: 0.3
         });
-        planeBody.material = material;
+        boxBody.material = material;
 
         // Set collision filters - collidable with everything
-        planeBody.collisionFilterGroup = 1;
-        planeBody.collisionFilterMask = -1;
+        boxBody.collisionFilterGroup = 1;
+        boxBody.collisionFilterMask = -1;
 
-        RobloxEnvironment.physicsWorld.addBody(planeBody);
+        RobloxEnvironment.physicsWorld.addBody(boxBody);
         console.log('[PHYSICS] Baseplate physics body added to world');
     }
 }
 
 function createSpawnPoint() {
-    const spawnGroup = new THREE.Group();
+    // Check if SpawnPoint already exists (from loaded game)
+    if (luaObjects['SpawnPoint']) {
+        // Update the existing one with visual and physics if needed
+        const spawnInstance = luaObjects['SpawnPoint'];
+        if (!spawnInstance.threeObject) {
+            // Create 3D representation using standard geometry with scale
+            const spawnGeometry = new THREE.BoxGeometry(4, 4, 4);
+            const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+            
+            // Placeholder material for top (will be replaced with texture)
+            const topMaterialPlaceholder = new THREE.MeshLambertMaterial({ color: 0x00ff00 });
+            
+            const materials = [
+                sideMaterial, // right
+                sideMaterial, // left
+                topMaterialPlaceholder,  // top (placeholder)
+                sideMaterial, // bottom
+                sideMaterial, // front
+                sideMaterial  // back
+            ];
 
-    // Create 3D spawn platform
-    const spawnGeometry = new THREE.BoxGeometry(10, 0.5, 10);
-    const textureLoader = new THREE.TextureLoader();
-    const spawnTexture = textureLoader.load('spawn.png');
+            const spawn = new THREE.Mesh(spawnGeometry, materials);
+            spawn.position.copy(spawnInstance.Position);
+            spawn.rotation.copy(spawnInstance.Rotation);
+            spawn.scale.set(
+                spawnInstance.Size.x / 4,
+                spawnInstance.Size.y / 4,
+                spawnInstance.Size.z / 4
+            );
+            spawn.receiveShadow = false;
+            spawn.castShadow = true;
+            scene.add(spawn);
+            spawnInstance.threeObject = spawn;
+            
+            // Load texture with cache busting
+            loadTextureWithCacheBust('imgs/spawn.png', 
+                (texture) => {
+                    console.log('[SPAWN] Texture loaded successfully');
+                    // Replace top material with textured one
+                    materials[2] = new THREE.MeshLambertMaterial({ map: texture, name: 'SpawnTop' });
+                    // Force Three.js to update materials
+                    const newMaterials = [...materials];
+                    spawn.material = newMaterials;
+                    console.log('[SPAWN] Applied spawn texture to top face');
+                },
+                (progress) => {
+                    console.log('[SPAWN] Texture loading progress:', progress);
+                },
+                (error) => {
+                    console.warn('[SPAWN] Texture load failed:', error);
+                    // Keep the green placeholder material
+                }
+            );
 
-    const topMaterial = new THREE.MeshLambertMaterial({ map: spawnTexture });
-    const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+            // Add physics
+            if (RobloxEnvironment.physicsWorld) {
+                const shape = new CANNON.Box(new CANNON.Vec3(
+                    spawnInstance.Size.x / 2,
+                    spawnInstance.Size.y / 2,
+                    spawnInstance.Size.z / 2
+                ));
+                const body = new CANNON.Body({
+                    mass: 0,
+                    shape: shape,
+                    position: new CANNON.Vec3(
+                        spawnInstance.Position.x,
+                        spawnInstance.Position.y,
+                        spawnInstance.Position.z
+                    ),
+                    material: new CANNON.Material({
+                        friction: 0.4,
+                        restitution: 0.05
+                    })
+                });
+                body.userData = { mesh: spawn, instance: spawnInstance };
+                RobloxEnvironment.physicsWorld.addBody(body);
+                spawnInstance.cannonBody = body;
+            }
+        }
+        return;
+    }
 
-    const materials = [
-        sideMaterial, // right
-        sideMaterial, // left
-        topMaterial,  // top
-        sideMaterial, // bottom
-        sideMaterial, // front
-        sideMaterial  // back
-    ];
+    // Create new SpawnPoint
+    const spawnInstance = new RobloxInstance('Part', 'SpawnPoint');
+    spawnInstance.Size = new THREE.Vector3(10, 0.5, 10);
+    spawnInstance.Position = new THREE.Vector3(0, 0.25, 0);
+    spawnInstance.Rotation = new THREE.Euler(0, 0, 0);
+    spawnInstance.Color = new THREE.Color(0.5, 0.5, 0.5);
+    spawnInstance.Anchored = true;
+    spawnInstance.CanCollide = true;
 
-    const spawn = new THREE.Mesh(spawnGeometry, materials);
-    spawn.position.y = 0.25;
-    spawn.receiveShadow = false;
-    spawnGroup.add(spawn);
+    // Create 3D spawn platform using standard geometry with scale
+    const spawnGeometry = new THREE.BoxGeometry(4, 4, 4);
+    
+    // Load texture with cache busting
+    loadTextureWithCacheBust('imgs/spawn.png', 
+        (spawnTexture) => {
+            console.log('[SPAWN] New spawn texture loaded successfully');
+            
+            const topMaterial = new THREE.MeshLambertMaterial({ map: spawnTexture });
+            const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
 
-    scene.add(spawnGroup);
+            const materials = [
+                sideMaterial, // right
+                sideMaterial, // left
+                topMaterial,  // top
+                sideMaterial, // bottom
+                sideMaterial, // front
+                sideMaterial  // back
+            ];
+
+            const spawn = new THREE.Mesh(spawnGeometry, materials);
+            spawn.position.copy(spawnInstance.Position);
+            spawn.scale.set(10/4, 0.5/4, 10/4); // Scale to match desired size
+            spawn.receiveShadow = false;
+            spawn.castShadow = true;
+            scene.add(spawn);
+
+            spawnInstance.threeObject = spawn;
+            
+            // Add to workspace
+            RobloxEnvironment.Workspace.Children.push(spawnInstance);
+            luaObjects['SpawnPoint'] = spawnInstance;
+            
+            // Add physics collision for spawn point
+            if (RobloxEnvironment.physicsWorld) {
+                const shape = new CANNON.Box(new CANNON.Vec3(
+                    spawnInstance.Size.x / 2,
+                    spawnInstance.Size.y / 2,
+                    spawnInstance.Size.z / 2
+                ));
+                const body = new CANNON.Body({
+                    mass: 0,
+                    shape: shape,
+                    position: new CANNON.Vec3(
+                        spawnInstance.Position.x,
+                        spawnInstance.Position.y,
+                        spawnInstance.Position.z
+                    ),
+                    material: new CANNON.Material({
+                        friction: 0.4,
+                        restitution: 0.05
+                    })
+                });
+                body.userData = { mesh: spawn, instance: spawnInstance };
+                RobloxEnvironment.physicsWorld.addBody(body);
+                spawnInstance.cannonBody = body;
+            }
+            
+            console.log('[SPAWN] SpawnPoint created with texture');
+        },
+        (progress) => {
+            console.log('[SPAWN] Texture loading progress:', progress);
+        },
+        (error) => {
+            console.warn('[SPAWN] Failed to load spawn texture, using fallback');
+            // Fallback: Create spawn without texture
+            const topMaterial = new THREE.MeshLambertMaterial({ color: 0x00ff00 });
+            const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+
+            const materials = [
+                sideMaterial, // right
+                sideMaterial, // left
+                topMaterial,  // top
+                sideMaterial, // bottom
+                sideMaterial, // front
+                sideMaterial  // back
+            ];
+
+            const spawn = new THREE.Mesh(spawnGeometry, materials);
+            spawn.position.copy(spawnInstance.Position);
+            spawn.scale.set(10/4, 0.5/4, 10/4);
+            spawn.receiveShadow = false;
+            spawn.castShadow = true;
+            scene.add(spawn);
+
+            spawnInstance.threeObject = spawn;
+            
+            // Add to workspace
+            RobloxEnvironment.Workspace.Children.push(spawnInstance);
+            luaObjects['SpawnPoint'] = spawnInstance;
+            
+            // Add physics collision for spawn point
+            if (RobloxEnvironment.physicsWorld) {
+                const shape = new CANNON.Box(new CANNON.Vec3(
+                    spawnInstance.Size.x / 2,
+                    spawnInstance.Size.y / 2,
+                    spawnInstance.Size.z / 2
+                ));
+                const body = new CANNON.Body({
+                    mass: 0,
+                    shape: shape,
+                    position: new CANNON.Vec3(
+                        spawnInstance.Position.x,
+                        spawnInstance.Position.y,
+                        spawnInstance.Position.z
+                    ),
+                    material: new CANNON.Material({
+                        friction: 0.4,
+                        restitution: 0.05
+                    })
+                });
+                body.userData = { mesh: spawn, instance: spawnInstance };
+                RobloxEnvironment.physicsWorld.addBody(body);
+                spawnInstance.cannonBody = body;
+            }
+            
+            console.log('[SPAWN] SpawnPoint created with fallback green top');
+        }
+    );
 }
 
 function createSkybox() {
     const skyGeometry = new THREE.SphereGeometry(400, 32, 32);
     const textureLoader = new THREE.TextureLoader();
-    const skyTexture = textureLoader.load('1eprhbtmvoo51.png');
+    const skyTexture = textureLoader.load('imgs/1eprhbtmvoo51.png');
     skyTexture.wrapS = THREE.RepeatWrapping;
     skyTexture.wrapT = THREE.RepeatWrapping;
     skyTexture.repeat.set(1, 1);
@@ -829,7 +1089,7 @@ function updatePlacementPreview() {
 function selectObjectAtMouse() {
     // First check for gizmo intersections
     raycaster.setFromCamera(mouse, camera);
-    const gizmoIntersects = raycaster.intersectObjects(gizmoHandles, true);
+    const gizmoIntersects = raycaster.intersectObjects(gizmoHandles.filter(h => h && h.handle && transformMode && h.type === transformMode).map(h => h.handle), true);
 
     if (gizmoIntersects.length > 0) {
         // Handle gizmo interaction
@@ -859,8 +1119,8 @@ function selectObjectAtMouse() {
             obj = obj.parent;
         }
 
-        // Skip gizmos
-        if (obj === moveGizmo || obj === rotateGizmo || obj === scaleGizmo || gizmoHandles.includes(obj)) {
+        // Skip gizmo groups so we don't select gizmo visuals as scene objects
+        if (obj === moveGizmo || obj === rotateGizmo || obj === scaleGizmo) {
             continue;
         }
 
@@ -877,11 +1137,16 @@ function selectObjectAtMouse() {
     if (selectedObject) {
         // Clear previous selection and select this object
         clearObjectSelection();
-        selectedObjects.add(selectedObject);
-        if (selectedObject.threeObject) {
-            selectedObject.threeObject.material.emissive = new THREE.Color(0x444400);
+        // Skip selecting SpawnPoint
+        if (selectedObject.Name !== 'SpawnPoint') {
+            selectedObjects.add(selectedObject);
+            if (selectedObject.threeObject) {
+                selectedObject.threeObject.material.emissive = new THREE.Color(0x444400);
+            }
         }
-        addOutput(`Selected ${selectedObject.Name}`, 'success');
+        if (selectedObject.Name !== 'SpawnPoint') {
+            addOutput(`Selected ${selectedObject.Name}`, 'success');
+        }
         updateGizmoVisibility();
         updatePropertiesPanel();
         return true;
@@ -899,6 +1164,10 @@ function clearObjectSelection() {
         }
     });
     selectedObjects.clear();
+
+    // Clear selected class from workspace tree items
+    document.querySelectorAll('.workspace-item').forEach(item => item.classList.remove('selected'));
+
     if (moveGizmo) moveGizmo.visible = false;
     if (rotateGizmo) rotateGizmo.visible = false;
     if (scaleGizmo) scaleGizmo.visible = false;
@@ -934,10 +1203,22 @@ function deleteSelectedObjects() {
             }
         }
 
+        // Close script tab if this is a Script object
+        if (obj.ClassName === 'Script') {
+            console.log(`[DEBUG] Deleting Script object: ${obj.Name}, calling closeScriptTab`);
+            closeScriptTab(obj.Name);
+        } else {
+            console.log(`[DEBUG] Deleting non-Script object: ${obj.Name} (${obj.ClassName})`);
+        }
+
         deletedCount++;
     });
 
     selectedObjects.clear();
+
+    // Clear selected class from workspace tree items
+    document.querySelectorAll('.workspace-item').forEach(item => item.classList.remove('selected'));
+
     if (moveGizmo) moveGizmo.visible = false;
     if (rotateGizmo) rotateGizmo.visible = false;
     if (scaleGizmo) scaleGizmo.visible = false;
@@ -977,16 +1258,63 @@ function playDeleteSound() {
 }
 
 function addToWorkspaceTree(objectName, objectType) {
-    const workspaceChildren = document.getElementById('workspace-children');
-    if (!workspaceChildren) return;
+    const obj = luaObjects[objectName];
+    if (!obj) return;
+
+    // Remove existing entry if it exists
+    removeFromWorkspaceTree(objectName);
+
+    // Determine parent element
+    let parentElement;
+    if (obj.Parent === RobloxEnvironment.Workspace) {
+        parentElement = document.getElementById('workspace-children');
+    } else if (obj.Parent && obj.Parent.Name) {
+        // Find the parent's DOM element
+        const parentItem = document.querySelector(`[data-object-name="${obj.Parent.Name}"]`);
+        if (parentItem) {
+            // Check if parent has children container
+            let childrenContainer = parentItem.querySelector('.workspace-children');
+            if (!childrenContainer) {
+                childrenContainer = document.createElement('div');
+                childrenContainer.className = 'workspace-children';
+                parentItem.appendChild(childrenContainer);
+
+                // Add expand/collapse arrow to parent
+                parentItem.classList.add('has-children');
+                if (!parentItem.querySelector('.expand-arrow')) {
+                    const arrow = document.createElement('span');
+                    arrow.className = 'expand-arrow';
+                    arrow.textContent = '▶';
+                    arrow.style.cursor = 'pointer';
+                    arrow.style.marginRight = '4px';
+                    arrow.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        toggleExpanded(parentItem);
+                    });
+                    parentItem.insertBefore(arrow, parentItem.firstChild);
+                }
+            }
+            parentElement = childrenContainer;
+        } else {
+            // Parent not found, default to workspace
+            parentElement = document.getElementById('workspace-children');
+        }
+    } else {
+        parentElement = document.getElementById('workspace-children');
+    }
+
+    if (!parentElement) return;
 
     const item = document.createElement('div');
     item.className = `workspace-item workspace-object ${objectType}`;
     item.textContent = objectName;
     item.dataset.objectName = objectName;
-    item.addEventListener('click', () => selectObjectFromWorkspace(objectName));
+    item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectObjectFromWorkspace(objectName, e.shiftKey);
+    });
 
-    workspaceChildren.appendChild(item);
+    parentElement.appendChild(item);
 }
 
 function removeFromWorkspaceTree(objectName) {
@@ -1001,10 +1329,61 @@ function removeFromWorkspaceTree(objectName) {
     });
 }
 
-function selectObjectFromWorkspace(objectName) {
+function toggleExpanded(item) {
+    const childrenContainer = item.querySelector('.workspace-children');
+    const arrow = item.querySelector('.expand-arrow');
+
+    if (childrenContainer) {
+        const isExpanded = item.dataset.expanded === 'true';
+        if (isExpanded) {
+            childrenContainer.style.display = 'none';
+            item.dataset.expanded = 'false';
+            if (arrow) arrow.textContent = '▶';
+        } else {
+            childrenContainer.style.display = 'block';
+            item.dataset.expanded = 'true';
+            if (arrow) arrow.textContent = '▼';
+        }
+    }
+}
+
+function selectObjectFromWorkspace(objectName, shiftKey = false) {
     const obj = luaObjects[objectName];
     if (!obj) return;
 
+    // Handle multi-selection with Shift key
+    if (shiftKey) {
+        // Toggle selection for this object
+        const workspaceItem = document.querySelector(`[data-object-name="${objectName}"]`);
+        if (selectedObjects.has(obj)) {
+            // Remove from selection
+            selectedObjects.delete(obj);
+            if (workspaceItem) {
+                workspaceItem.classList.remove('selected');
+            }
+            if (obj.threeObject) {
+                obj.threeObject.material.emissive = new THREE.Color(0x000000);
+            }
+            addOutput(`Removed ${objectName} from selection`, 'info');
+        } else {
+            // Add to selection
+            selectedObjects.add(obj);
+            if (workspaceItem) {
+                workspaceItem.classList.add('selected');
+            }
+            if (obj.threeObject) {
+                obj.threeObject.material.emissive = new THREE.Color(0x444400);
+            }
+            addOutput(`Added ${objectName} to selection`, 'info');
+        }
+
+        // Update gizmos and properties for multi-selection
+        updateGizmoVisibility();
+        updatePropertiesPanel();
+        return;
+    }
+
+    // Single selection (normal behavior)
     // Clear previous selection
     document.querySelectorAll('.workspace-item').forEach(item => item.classList.remove('selected'));
 
@@ -1014,12 +1393,28 @@ function selectObjectFromWorkspace(objectName) {
         workspaceItem.classList.add('selected');
     }
 
-    // Select in 3D scene
-    clearObjectSelection();
+    // Clear 3D selection but don't clear workspace selection
+    selectedObjects.forEach(obj => {
+        if (obj.threeObject) {
+            obj.threeObject.material.emissive = new THREE.Color(0x000000);
+        }
+    });
+    selectedObjects.clear();
+    if (moveGizmo) moveGizmo.visible = false;
+    if (rotateGizmo) rotateGizmo.visible = false;
+    if (scaleGizmo) scaleGizmo.visible = false;
+
+    // Add the new selection (including folders)
     selectedObjects.add(obj);
+
+    // Only show gizmos for objects with 3D representations
     if (obj.threeObject) {
         obj.threeObject.material.emissive = new THREE.Color(0x444400);
+        updateGizmoVisibility();
     }
+
+    // Update properties panel for all selectable objects
+    updatePropertiesPanel();
 
     // If it's a script, open it in a dedicated tab
     if (obj.ClassName === 'Script') {
@@ -1027,6 +1422,96 @@ function selectObjectFromWorkspace(objectName) {
     }
 
     addOutput(`Selected ${objectName} from workspace`, 'success');
+}
+
+function getUniqueName(base) {
+    let name = base;
+    let i = 1;
+    while (luaObjects[name]) {
+        name = `${base}_Copy${i}`;
+        i++;
+    }
+    return name;
+}
+
+function duplicateSelection() {
+    if (selectedObjects.size === 0) {
+        addOutput('No objects selected to duplicate!', 'error');
+        return;
+    }
+
+    const newSelection = new Set();
+
+    selectedObjects.forEach(obj => {
+        const baseName = obj.Name || obj.ClassName || 'Object';
+        const newName = getUniqueName(baseName);
+
+        // Clone instance data
+        const clone = obj.Clone ? obj.Clone() : new RobloxInstance(obj.ClassName, newName);
+        clone.Name = newName;
+        clone.ClassName = obj.ClassName;
+        clone.Parent = RobloxEnvironment.Workspace;
+        RobloxEnvironment.Workspace.Children.push(clone);
+
+        // Copy important properties
+        clone.Size = obj.Size ? obj.Size.clone() : (new THREE.Vector3().copy(obj.Size || new THREE.Vector3(4,4,4)));
+        clone.Position = obj.Position ? obj.Position.clone().add(new THREE.Vector3(0.5, 0.5, 0.5)) : new THREE.Vector3(0.5,0.5,0.5);
+        clone.Rotation = obj.Rotation ? obj.Rotation.clone() : (new THREE.Euler());
+        clone.Color = obj.Color ? obj.Color.clone() : (new THREE.Color(0.5,0.5,0.5));
+        clone.Transparency = obj.Transparency || 0;
+        clone.Anchored = !!obj.Anchored;
+        clone.CanCollide = !!obj.CanCollide;
+        clone.Mass = obj.Mass || 1;
+        clone.Friction = obj.Friction || 0.4;
+        clone.Restitution = obj.Restitution || 0.05;
+
+        // Handle Script objects specially (copy source)
+        if (obj.ClassName === 'Script') {
+            clone.Source = obj.Source || '';
+            luaObjects[newName] = clone;
+            addToWorkspaceTree(newName, 'script');
+            openScriptTab(clone);
+            newSelection.add(clone);
+            addOutput(`Duplicated script: ${obj.Name} -> ${newName}`, 'success');
+            return;
+        }
+
+        // For parts, duplicate Three mesh and physics body
+        if (obj.ClassName === 'Part' && obj.threeObject) {
+            const meshClone = obj.threeObject.clone(true);
+            meshClone.position.copy(obj.threeObject.position).add(new THREE.Vector3(0.5, 0.5, 0.5));
+            scene.add(meshClone);
+            clone.threeObject = meshClone;
+            clone.Position = meshClone.position.clone();
+            clone.Size = obj.Size ? obj.Size.clone() : clone.Size;
+            clone.Color = obj.Color ? obj.Color.clone() : clone.Color;
+            clone.Transparency = obj.Transparency || clone.Transparency;
+
+            // Register in luaObjects and workspace tree
+            luaObjects[newName] = clone;
+            addToWorkspaceTree(newName, 'part');
+
+            // Create physics body for the clone
+            if (RobloxEnvironment.physicsBodyManager) {
+                RobloxEnvironment.physicsBodyManager.createBody(clone);
+            }
+
+            newSelection.add(clone);
+            addOutput(`Duplicated part: ${obj.Name} -> ${newName}`, 'success');
+            return;
+        }
+
+        // Generic fallback: register clone and workspace tree
+        luaObjects[newName] = clone;
+        addToWorkspaceTree(newName, clone.ClassName ? clone.ClassName.toLowerCase() : 'object');
+        newSelection.add(clone);
+        addOutput(`Duplicated ${obj.ClassName || 'object'}: ${obj.Name} -> ${newName}`, 'success');
+    });
+
+    // Replace selection with new clones
+    clearObjectSelection();
+    newSelection.forEach(n => selectedObjects.add(n));
+    updatePropertiesPanel();
 }
 
 
@@ -1128,14 +1613,41 @@ function handleDrag(event) {
         const frameDeltaY = currentMousePos.y - lastMousePos.y;
 
         if (gizmoDragType === 'move') {
-            // Move along specific axis
-            const delta = new THREE.Vector3();
-            if (gizmoDragAxis === 'x') delta.x = frameDeltaX * moveSpeed;
-            else if (gizmoDragAxis === 'y') delta.y = -frameDeltaY * moveSpeed;
-            else if (gizmoDragAxis === 'z') delta.z = -frameDeltaX * moveSpeed;
+            // Compute movement along world axis by projecting mouse ray onto a camera-facing plane,
+            // then projecting that point onto the requested axis. This prevents X-axis movement
+            // from behaving incorrectly when camera is at different angles.
+            const canvas = document.getElementById('viewport-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const ndc = new THREE.Vector2(
+                ((event.clientX - rect.left) / rect.width) * 2 - 1,
+                -((event.clientY - rect.top) / rect.height) * 2 + 1
+            );
+            raycaster.setFromCamera(ndc, camera);
 
-            obj.threeObject.userData.totalDelta.add(delta);
-            obj.threeObject.position.copy(obj.threeObject.userData.dragStartPos).add(obj.threeObject.userData.totalDelta);
+            // Camera-facing plane through the object's drag start position
+            const cameraDir = new THREE.Vector3();
+            camera.getWorldDirection(cameraDir);
+            const pickPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(cameraDir, obj.threeObject.userData.dragStartPos);
+
+            const intersectPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(pickPlane, intersectPoint);
+            if (!intersectPoint) return;
+
+            // Axis vector in world space (use world axes)
+            const axisVec = new THREE.Vector3(
+                gizmoDragAxis === 'x' ? 1 : 0,
+                gizmoDragAxis === 'y' ? 1 : 0,
+                gizmoDragAxis === 'z' ? 1 : 0
+            ).normalize();
+
+            // Project the vector from dragStart to intersection onto the axis
+            const fromStart = new THREE.Vector3().subVectors(intersectPoint, obj.threeObject.userData.dragStartPos);
+            const distanceAlong = fromStart.dot(axisVec);
+
+            // New position is start position plus projection along axis
+            const newPos = new THREE.Vector3().copy(obj.threeObject.userData.dragStartPos).add(axisVec.multiplyScalar(distanceAlong));
+
+            obj.threeObject.position.copy(newPos);
             obj.Position = obj.threeObject.position.clone();
             // Update physics body position if it exists
             if (obj.cannonBody) {
@@ -1384,6 +1896,20 @@ function updatePropertiesPanel() {
     const selectedObj = Array.from(selectedObjects)[0];
     console.log('Updating properties for object:', selectedObj.Name, selectedObj.ClassName);
 
+    // Skip updating properties for SpawnPoint
+    if (selectedObj.Name === 'SpawnPoint') {
+        return;
+    }
+
+    // Update object class (read-only display of object type)
+    const classInput = document.getElementById('prop-class');
+    if (classInput) {
+        classInput.value = selectedObj.ClassName || 'Object';
+        console.log('Set class to:', classInput.value);
+    } else {
+        console.error('prop-class input not found');
+    }
+
     // Update object name
     const nameInput = document.getElementById('prop-name');
     if (nameInput) {
@@ -1396,7 +1922,7 @@ function updatePropertiesPanel() {
     // Anchored checkbox
     const anchoredInput = document.getElementById('prop-anchored');
     if (anchoredInput) {
-        anchoredInput.checked = selectedObj.Anchored !== false; // Default to true
+        anchoredInput.checked = selectedObj.Anchored === true; // Default to false
         anchoredInput.title = "Toggle anchoring for this part";
         anchoredInput.onchange = (e) => {
             selectedObj.Anchored = e.target.checked;
@@ -1411,7 +1937,7 @@ function updatePropertiesPanel() {
         };
     }
 
-    // CanCollide checkbox - now enabled in studio for physics testing
+    // CanCollide checkbox - enabled in studio for physics testing
     const canCollideInput = document.getElementById('prop-can-collide');
     if (canCollideInput) {
         canCollideInput.checked = selectedObj.CanCollide !== false; // Default to true
@@ -1442,6 +1968,38 @@ function updatePropertiesPanel() {
         if (posZ) posZ.value = pos.z.toFixed(2);
         console.log('Set position to:', pos.x.toFixed(2), pos.y.toFixed(2), pos.z.toFixed(2));
 
+        // Add event listeners for position inputs
+        if (posX) {
+            posX.oninput = (e) => {
+                selectedObj.threeObject.position.x = parseFloat(e.target.value) || 0;
+                selectedObj.Position = selectedObj.threeObject.position.clone();
+                // Update physics body position
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+        if (posY) {
+            posY.oninput = (e) => {
+                selectedObj.threeObject.position.y = parseFloat(e.target.value) || 0;
+                selectedObj.Position = selectedObj.threeObject.position.clone();
+                // Update physics body position
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+        if (posZ) {
+            posZ.oninput = (e) => {
+                selectedObj.threeObject.position.z = parseFloat(e.target.value) || 0;
+                selectedObj.Position = selectedObj.threeObject.position.clone();
+                // Update physics body position
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+
         const rot = selectedObj.threeObject.rotation;
         const rotX = document.getElementById('prop-rot-x');
         const rotY = document.getElementById('prop-rot-y');
@@ -1452,6 +2010,38 @@ function updatePropertiesPanel() {
         if (rotZ) rotZ.value = rot.z.toFixed(2);
         console.log('Set rotation to:', rot.x.toFixed(2), rot.y.toFixed(2), rot.z.toFixed(2));
 
+        // Add event listeners for rotation inputs
+        if (rotX) {
+            rotX.oninput = (e) => {
+                selectedObj.threeObject.rotation.x = parseFloat(e.target.value) || 0;
+                selectedObj.Rotation = new THREE.Euler().setFromQuaternion(selectedObj.threeObject.quaternion);
+                // Update physics body rotation
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+        if (rotY) {
+            rotY.oninput = (e) => {
+                selectedObj.threeObject.rotation.y = parseFloat(e.target.value) || 0;
+                selectedObj.Rotation = new THREE.Euler().setFromQuaternion(selectedObj.threeObject.quaternion);
+                // Update physics body rotation
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+        if (rotZ) {
+            rotZ.oninput = (e) => {
+                selectedObj.threeObject.rotation.z = parseFloat(e.target.value) || 0;
+                selectedObj.Rotation = new THREE.Euler().setFromQuaternion(selectedObj.threeObject.quaternion);
+                // Update physics body rotation
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+
         const scale = selectedObj.threeObject.scale;
         const sizeX = document.getElementById('prop-size-x');
         const sizeY = document.getElementById('prop-size-y');
@@ -1460,6 +2050,46 @@ function updatePropertiesPanel() {
         if (sizeX) sizeX.value = (scale.x * 4).toFixed(2); // Size is 4x scale (since default part is 4x4x4)
         if (sizeY) sizeY.value = (scale.y * 4).toFixed(2);
         if (sizeZ) sizeZ.value = (scale.z * 4).toFixed(2);
+
+        // Add event listeners for size inputs
+        if (sizeX) {
+            sizeX.oninput = (e) => {
+                const newSize = parseFloat(e.target.value) || 4;
+                selectedObj.threeObject.scale.x = newSize / 4;
+                selectedObj.Size.x = newSize;
+                // Update physics body size
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+        if (sizeY) {
+            sizeY.oninput = (e) => {
+                const newSize = parseFloat(e.target.value) || 4;
+                selectedObj.threeObject.scale.y = newSize / 4;
+                selectedObj.Size.y = newSize;
+                // Update physics body size
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+        if (sizeZ) {
+            sizeZ.oninput = (e) => {
+                const newSize = parseFloat(e.target.value) || 4;
+                selectedObj.threeObject.scale.z = newSize / 4;
+                selectedObj.Size.z = newSize;
+                // Update physics body size
+                if (RobloxEnvironment.physicsBodyManager) {
+                    RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+                }
+            };
+        }
+
+        // Update physics body to match current size
+        if (RobloxEnvironment.physicsBodyManager) {
+            RobloxEnvironment.physicsBodyManager.updateBody(selectedObj);
+        }
         console.log('Set size to:', (scale.x * 4).toFixed(2), (scale.y * 4).toFixed(2), (scale.z * 4).toFixed(2));
 
         if (selectedObj.threeObject.material && selectedObj.threeObject.material.color) {
@@ -1467,11 +2097,93 @@ function updatePropertiesPanel() {
             const colorR = document.getElementById('prop-color-r');
             const colorG = document.getElementById('prop-color-g');
             const colorB = document.getElementById('prop-color-b');
+            const colorPicker = document.getElementById('prop-color-picker');
 
+            // Set RGB input values
             if (colorR) colorR.value = color.r.toFixed(2);
             if (colorG) colorG.value = color.g.toFixed(2);
             if (colorB) colorB.value = color.b.toFixed(2);
+            
+            // Set color picker value (convert from 0-1 to 0-255 hex)
+            if (colorPicker) {
+                const r = Math.round(color.r * 255);
+                const g = Math.round(color.g * 255);
+                const b = Math.round(color.b * 255);
+                colorPicker.value = '#' + 
+                    r.toString(16).padStart(2, '0') + 
+                    g.toString(16).padStart(2, '0') + 
+                    b.toString(16).padStart(2, '0');
+            }
+            
             console.log('Set color to:', color.r.toFixed(2), color.g.toFixed(2), color.b.toFixed(2));
+
+            // Add event listener for R input
+            if (colorR) {
+                colorR.oninput = (e) => {
+                    const newR = parseFloat(e.target.value) || 0;
+                    if (selectedObj.threeObject.material.color) {
+                        selectedObj.threeObject.material.color.r = newR;
+                        selectedObj.Color = selectedObj.threeObject.material.color.clone();
+                        updateColorPickerFromRGB();
+                    }
+                };
+            }
+
+            // Add event listener for G input
+            if (colorG) {
+                colorG.oninput = (e) => {
+                    const newG = parseFloat(e.target.value) || 0;
+                    if (selectedObj.threeObject.material.color) {
+                        selectedObj.threeObject.material.color.g = newG;
+                        selectedObj.Color = selectedObj.threeObject.material.color.clone();
+                        updateColorPickerFromRGB();
+                    }
+                };
+            }
+
+            // Add event listener for B input
+            if (colorB) {
+                colorB.oninput = (e) => {
+                    const newB = parseFloat(e.target.value) || 0;
+                    if (selectedObj.threeObject.material.color) {
+                        selectedObj.threeObject.material.color.b = newB;
+                        selectedObj.Color = selectedObj.threeObject.material.color.clone();
+                        updateColorPickerFromRGB();
+                    }
+                };
+            }
+
+            // Add event listener for color picker
+            if (colorPicker) {
+                colorPicker.oninput = (e) => {
+                    const hex = e.target.value;
+                    const r = parseInt(hex.slice(1, 3), 16) / 255;
+                    const g = parseInt(hex.slice(3, 5), 16) / 255;
+                    const b = parseInt(hex.slice(5, 7), 16) / 255;
+                    
+                    if (selectedObj.threeObject.material.color) {
+                        selectedObj.threeObject.material.color.setRGB(r, g, b);
+                        selectedObj.Color = selectedObj.threeObject.material.color.clone();
+                        
+                        // Update RGB inputs
+                        if (colorR) colorR.value = r.toFixed(2);
+                        if (colorG) colorG.value = g.toFixed(2);
+                        if (colorB) colorB.value = b.toFixed(2);
+                    }
+                };
+            }
+
+            // Helper function to update color picker from RGB inputs
+            function updateColorPickerFromRGB() {
+                if (!colorPicker) return;
+                const r = Math.round((parseFloat(colorR?.value) || 0) * 255);
+                const g = Math.round((parseFloat(colorG?.value) || 0) * 255);
+                const b = Math.round((parseFloat(colorB?.value) || 0) * 255);
+                colorPicker.value = '#' + 
+                    r.toString(16).padStart(2, '0') + 
+                    g.toString(16).padStart(2, '0') + 
+                    b.toString(16).padStart(2, '0');
+            }
         }
 
         if (selectedObj.threeObject.material && typeof selectedObj.threeObject.material.opacity !== 'undefined') {
@@ -1483,17 +2195,6 @@ function updatePropertiesPanel() {
         }
     }
 
-    // CanCollide checkbox - disabled in studio, only for game mode
-    if (canCollideInput) {
-        canCollideInput.checked = selectedObj.CanCollide !== false; // Default to true
-        canCollideInput.disabled = true; // Disabled in studio
-        canCollideInput.title = "Collision only works in game mode";
-        canCollideInput.onchange = (e) => {
-            // Prevent changes in studio
-            e.target.checked = selectedObj.CanCollide !== false;
-            addOutput('Collision can only be toggled in game mode', 'success');
-        };
-    }
 
     // Update Body Type selector
     const bodyTypeSelect = document.getElementById('prop-body-type');
@@ -1576,6 +2277,147 @@ function updatePropertiesPanel() {
         };
     }
 
+    // ===== GUI PROPERTIES =====
+    // Check if this is a GUI object
+    const isGuiObject = selectedObj instanceof GuiObject || 
+                        ['Frame', 'TextLabel', 'TextButton', 'ScreenGui'].includes(selectedObj.ClassName);
+    
+    // Get GUI property containers
+    const bgTransparencyContainer = document.getElementById('prop-bg-transparency-container');
+    const textTransparencyContainer = document.getElementById('prop-text-transparency-container');
+    const textColorContainer = document.getElementById('prop-text-color-container');
+    const textSizeContainer = document.getElementById('prop-text-size-container');
+    const size2dContainer = document.getElementById('prop-size-2d-container');
+    
+    // Get GUI property inputs
+    const bgTransparencyInput = document.getElementById('prop-background-transparency');
+    const textTransparencyInput = document.getElementById('prop-text-transparency');
+    const textColorPicker = document.getElementById('prop-text-color-picker');
+    const textSizeInput = document.getElementById('prop-text-size');
+    const sizeWidthInput = document.getElementById('prop-size-width');
+    const sizeHeightInput = document.getElementById('prop-size-height');
+    
+    if (isGuiObject) {
+        console.log('Updating GUI properties for:', selectedObj.Name);
+        
+        // Show GUI-specific property containers
+        if (bgTransparencyContainer) bgTransparencyContainer.style.display = 'block';
+        if (textTransparencyContainer) textTransparencyContainer.style.display = 'block';
+        if (textColorContainer) textColorContainer.style.display = 'block';
+        if (textSizeContainer) textSizeContainer.style.display = 'block';
+        if (size2dContainer) size2dContainer.style.display = 'block';
+        
+        // Hide 3D-specific property containers for GUI objects
+        const posZInput = document.getElementById('prop-pos-z');
+        if (posZInput) {
+            posZInput.parentElement.style.display = 'none';
+        }
+        
+        // Update Background Transparency
+        if (bgTransparencyInput && selectedObj.BackgroundTransparency !== undefined) {
+            bgTransparencyInput.value = (selectedObj.BackgroundTransparency || 0).toFixed(2);
+            bgTransparencyInput.oninput = (e) => {
+                selectedObj.BackgroundTransparency = parseFloat(e.target.value) || 0;
+                if (selectedObj.element) {
+                    selectedObj.element.style.opacity = 1 - selectedObj.BackgroundTransparency;
+                }
+                console.log(`Set BackgroundTransparency for ${selectedObj.Name} to ${selectedObj.BackgroundTransparency}`);
+            };
+        }
+        
+        // Update Text Transparency
+        if (textTransparencyInput && selectedObj.TextTransparency !== undefined) {
+            textTransparencyInput.value = (selectedObj.TextTransparency || 0).toFixed(2);
+            textTransparencyInput.oninput = (e) => {
+                selectedObj.TextTransparency = parseFloat(e.target.value) || 0;
+                if (selectedObj.element) {
+                    selectedObj.element.style.color = selectedObj.TextTransparency < 1 ? 
+                        `rgba(255, 255, 255, ${1 - selectedObj.TextTransparency})` : '#ffffff';
+                }
+                console.log(`Set TextTransparency for ${selectedObj.Name} to ${selectedObj.TextTransparency}`);
+            };
+        }
+        
+        // Update Text Color
+        if (textColorPicker && selectedObj.TextColor3 !== undefined) {
+            const textColor = selectedObj.TextColor3 || new THREE.Color(1, 1, 1);
+            const r = Math.round(textColor.r * 255);
+            const g = Math.round(textColor.g * 255);
+            const b = Math.round(textColor.b * 255);
+            textColorPicker.value = '#' + r.toString(16).padStart(2, '0') + 
+                                   g.toString(16).padStart(2, '0') + 
+                                   b.toString(16).padStart(2, '0');
+            
+            textColorPicker.oninput = (e) => {
+                const hex = e.target.value;
+                const tr = parseInt(hex.slice(1, 3), 16) / 255;
+                const tg = parseInt(hex.slice(3, 5), 16) / 255;
+                const tb = parseInt(hex.slice(5, 7), 16) / 255;
+                selectedObj.TextColor3 = new THREE.Color(tr, tg, tb);
+                if (selectedObj.element) {
+                    selectedObj.element.style.color = `rgb(${r}, ${g}, ${b})`;
+                }
+                console.log(`Set TextColor3 for ${selectedObj.Name} to ${hex}`);
+            };
+        }
+        
+        // Update Text Size
+        if (textSizeInput && selectedObj.TextSize !== undefined) {
+            textSizeInput.value = selectedObj.TextSize || 14;
+            textSizeInput.oninput = (e) => {
+                selectedObj.TextSize = parseInt(e.target.value) || 14;
+                if (selectedObj.element) {
+                    selectedObj.element.style.fontSize = selectedObj.TextSize + 'px';
+                }
+                console.log(`Set TextSize for ${selectedObj.Name} to ${selectedObj.TextSize}`);
+            };
+        }
+        
+        // Update 2D Size (Width/Height)
+        if (sizeWidthInput && sizeHeightInput && selectedObj.Size) {
+            // Size for GUI objects is stored as Vector2 (x=width, y=height)
+            const width = selectedObj.Size.x || 100;
+            const height = selectedObj.Size.y || 100;
+            sizeWidthInput.value = Math.round(width);
+            sizeHeightInput.value = Math.round(height);
+            
+            sizeWidthInput.oninput = (e) => {
+                const newWidth = parseInt(e.target.value) || 100;
+                if (selectedObj.Size) {
+                    selectedObj.Size.x = newWidth;
+                }
+                if (selectedObj.element) {
+                    selectedObj.element.style.width = newWidth + 'px';
+                }
+                console.log(`Set Width for ${selectedObj.Name} to ${newWidth}`);
+            };
+            
+            sizeHeightInput.oninput = (e) => {
+                const newHeight = parseInt(e.target.value) || 100;
+                if (selectedObj.Size) {
+                    selectedObj.Size.y = newHeight;
+                }
+                if (selectedObj.element) {
+                    selectedObj.element.style.height = newHeight + 'px';
+                }
+                console.log(`Set Height for ${selectedObj.Name} to ${newHeight}`);
+            };
+        }
+    } else {
+        // Hide GUI-specific containers for non-GUI objects
+        if (bgTransparencyContainer) bgTransparencyContainer.style.display = 'none';
+        if (textTransparencyContainer) textTransparencyContainer.style.display = 'none';
+        if (textColorContainer) textColorContainer.style.display = 'none';
+        if (textSizeContainer) textSizeContainer.style.display = 'none';
+        if (size2dContainer) size2dContainer.style.display = 'none';
+        
+        // Show Z position for 3D objects
+        const posZInput = document.getElementById('prop-pos-z');
+        if (posZInput) {
+            posZInput.parentElement.style.display = 'block';
+        }
+    }
+
     // Show script source for Script objects
     const scriptSource = document.getElementById('script-source');
     if (scriptSource) {
@@ -1585,6 +2427,127 @@ function updatePropertiesPanel() {
         } else {
             scriptSource.style.display = 'none';
         }
+    }
+
+    // Show sound properties for Sound objects or if any sound objects exist in the scene
+    const soundIdInput = document.getElementById('prop-sound-id');
+    const soundVolumeInput = document.getElementById('prop-sound-volume');
+    const soundLoopingInput = document.getElementById('prop-sound-looping');
+    const soundTestBtn = document.getElementById('prop-sound-test');
+
+    // Check if there are any sound objects in the scene
+    const soundObjects = Object.values(luaObjects).filter(obj => obj.ClassName === 'Sound');
+    const hasSoundObjects = soundObjects.length > 0;
+
+    if (soundIdInput && soundVolumeInput && soundLoopingInput && soundTestBtn) {
+        if (selectedObj.ClassName === 'Sound' || (hasSoundObjects && !selectedObj)) {
+            // Show sound controls
+            soundIdInput.parentElement.style.display = 'block';
+            soundVolumeInput.parentElement.style.display = 'block';
+            soundLoopingInput.parentElement.style.display = 'block';
+            soundTestBtn.parentElement.style.display = 'block';
+
+            // Use selected sound object or first available sound object
+            const targetSound = selectedObj.ClassName === 'Sound' ? selectedObj : soundObjects[0];
+
+            if (targetSound) {
+                soundIdInput.value = targetSound.soundId || '';
+                soundVolumeInput.value = targetSound.volume || 0.5;
+                soundLoopingInput.checked = targetSound.looping || false;
+
+                // Update soundId when input changes
+                soundIdInput.oninput = (e) => {
+                    targetSound.soundId = e.target.value;
+                    console.log(`Set SoundId for ${targetSound.Name} to ${targetSound.soundId}`);
+                };
+
+                // Update volume when input changes
+                soundVolumeInput.oninput = (e) => {
+                    targetSound.volume = parseFloat(e.target.value) || 0.5;
+                    console.log(`Set Volume for ${targetSound.Name} to ${targetSound.volume}`);
+                };
+
+                // Update looping when checkbox changes
+                soundLoopingInput.onchange = (e) => {
+                    targetSound.looping = e.target.checked;
+                    console.log(`Set Looping for ${targetSound.Name} to ${targetSound.looping}`);
+                };
+
+                // Test sound button
+                soundTestBtn.onclick = () => {
+                    if (targetSound.soundId) {
+                        const audio = new Audio(targetSound.soundId);
+                        audio.volume = targetSound.volume;
+                        audio.loop = targetSound.looping;
+                        audio.play().catch(e => {
+                            console.warn('Could not play test sound:', e);
+                            addOutput('Could not play sound. Check URL and try again.', 'error');
+                        });
+                    } else {
+                        addOutput('No SoundId set for testing.', 'warning');
+                    }
+                };
+            }
+        } else {
+            soundIdInput.parentElement.style.display = 'none';
+            soundVolumeInput.parentElement.style.display = 'none';
+            soundLoopingInput.parentElement.style.display = 'none';
+            soundTestBtn.parentElement.style.display = 'none';
+        }
+    }
+
+    // Update Parent dropdown
+    const parentSelect = document.getElementById('prop-parent');
+    if (parentSelect) {
+        // Clear existing options except Workspace
+        parentSelect.innerHTML = '<option value="Workspace">Workspace</option>';
+
+        // Add all objects as potential parents (except the selected object itself and special objects like SpawnPoint)
+        Object.values(luaObjects).forEach(obj => {
+            if (obj !== selectedObj && obj.Name && obj.Name !== 'SpawnPoint') {
+                const option = document.createElement('option');
+                option.value = obj.Name;
+                option.textContent = obj.Name;
+                parentSelect.appendChild(option);
+            }
+        });
+
+        // Set current parent as selected
+        if (selectedObj.Parent && selectedObj.Parent.Name && selectedObj.Parent.Name !== 'Workspace') {
+            parentSelect.value = selectedObj.Parent.Name;
+        } else {
+            parentSelect.value = 'Workspace';
+        }
+
+        // Add change listener
+        parentSelect.onchange = (e) => {
+            const newParentName = e.target.value;
+            let newParent;
+
+            if (newParentName === 'Workspace') {
+                newParent = RobloxEnvironment.Workspace;
+            } else {
+                newParent = luaObjects[newParentName];
+            }
+
+            if (newParent && newParent !== selectedObj.Parent) {
+                // Remove from current parent
+                if (selectedObj.Parent) {
+                    selectedObj.Parent.Children = selectedObj.Parent.Children.filter(child => child !== selectedObj);
+                }
+
+                // Set new parent
+                selectedObj.Parent = newParent;
+                newParent.Children.push(selectedObj);
+
+                // Update workspace tree
+                removeFromWorkspaceTree(selectedObj.Name);
+                addToWorkspaceTree(selectedObj.Name, selectedObj.ClassName ? selectedObj.ClassName.toLowerCase() : 'object');
+
+                console.log(`Changed parent of ${selectedObj.Name} to ${newParent.Name}`);
+                addOutput(`Parented ${selectedObj.Name} to ${newParent.Name}`, 'success');
+            }
+        };
     }
 }
 
@@ -1795,6 +2758,131 @@ function updateCollisionVisualFeedback(obj) {
     }
 }
 
+function createFolder() {
+    const objectName = `Folder_${Object.keys(luaObjects).length + 1}`;
+    const instance = new RobloxInstance('Folder', objectName);
+    luaObjects[objectName] = instance;
+
+    // Folders are just organizational containers
+    instance.type = 'folder';
+    instance.ClassName = 'Folder';
+
+    // Set parent to workspace
+    instance.Parent = RobloxEnvironment.Workspace;
+    RobloxEnvironment.Workspace.Children.push(instance);
+
+    // Add to workspace tree
+    addToWorkspaceTree(objectName, 'folder');
+
+    addOutput(`📁 Folder "${objectName}" created in workspace!`, 'success');
+}
+
+function createModel() {
+    const objectName = `Model_${Object.keys(luaObjects).length + 1}`;
+    const instance = new RobloxInstance('Model', objectName);
+    luaObjects[objectName] = instance;
+
+    // Models are containers for grouping objects
+    instance.type = 'model';
+    instance.ClassName = 'Model';
+
+    // Set parent to workspace
+    instance.Parent = RobloxEnvironment.Workspace;
+    RobloxEnvironment.Workspace.Children.push(instance);
+
+    // Add to workspace tree
+    addToWorkspaceTree(objectName, 'model');
+
+    addOutput(`📦 Model "${objectName}" created in workspace!`, 'success');
+}
+
+function groupSelectionIntoModel() {
+    if (selectedObjects.size === 0) {
+        addOutput('No objects selected to group!', 'warning');
+        return;
+    }
+
+    // Create a new model
+    const modelName = `Model_${Object.keys(luaObjects).length + 1}`;
+    const model = new RobloxInstance('Model', modelName);
+    luaObjects[modelName] = model;
+
+    model.type = 'model';
+    model.ClassName = 'Model';
+
+    // Set parent to workspace
+    model.Parent = RobloxEnvironment.Workspace;
+    RobloxEnvironment.Workspace.Children.push(model);
+
+    // Add model to workspace tree FIRST so children can find their parent
+    addToWorkspaceTree(modelName, 'model');
+
+    // Move selected objects into the model
+    const objectsToMove = Array.from(selectedObjects);
+    objectsToMove.forEach(obj => {
+        // Remove from current parent
+        if (obj.Parent) {
+            obj.Parent.Children = obj.Parent.Children.filter(child => child !== obj);
+        }
+
+        // Add to model
+        obj.Parent = model;
+        model.Children.push(obj);
+
+        // Update workspace tree - remove from old location and add to new
+        removeFromWorkspaceTree(obj.Name);
+        addToWorkspaceTree(obj.Name, obj.ClassName ? obj.ClassName.toLowerCase() : 'object');
+    });
+
+    // Clear selection
+    selectedObjects.clear();
+    updatePropertiesPanel();
+
+    addOutput(`📦 Grouped ${objectsToMove.length} objects into "${modelName}"!`, 'success');
+}
+
+async function createNonVisualObject(type) {
+    const objectName = `${type}_${Object.keys(luaObjects).length + 1}`;
+    const instance = new RobloxInstance(type, objectName);
+    luaObjects[objectName] = instance;
+
+    // Create based on type
+    if (type === 'script') {
+        // Scripts contain Lua code
+        instance.type = 'script';
+        instance.ClassName = 'Script';
+        instance.Source = '-- New script\nprint("Hello from script!")';
+        console.log(`[DEBUG] Created script instance: ${objectName}`);
+        addOutput(`📜 Script "${objectName}" created in workspace!`, 'success');
+        // Open script editor
+        openScriptTab(instance);
+        addOutput(`Script "${instance.Name}" opened in editor`, 'success');
+    } else if (type === 'sound') {
+        // Sounds don't have visual representation
+        instance.type = 'sound';
+        instance.soundId = '';
+        instance.volume = 0.5;
+        instance.looping = false;
+        instance.isPlaying = false;
+        instance.ClassName = 'Sound';
+
+        // Show audio content warning (unless user dismissed it)
+        const warningDismissed = localStorage.getItem('rogold_audio_warning_dismissed') === 'true';
+        if (!warningDismissed) {
+            await showAudioWarningDialog();
+        }
+
+        addOutput(`🔊 Sound "${objectName}" created in workspace!`, 'success');
+    }
+
+    // Set parent to workspace
+    instance.Parent = RobloxEnvironment.Workspace;
+    RobloxEnvironment.Workspace.Children.push(instance);
+
+    // Add to workspace tree
+    addToWorkspaceTree(objectName, type);
+}
+
 function placePartAtMouse() {
     if (!placementPreview || !placementPreview.visible || !selectedToolboxItem) return;
 
@@ -1814,6 +2902,7 @@ function placePartAtMouse() {
             scene.add(part);
             instance.threeObject = part;
             instance.ClassName = 'Part';
+            instance.Anchored = false; // Default to unanchored for physics
             instance.CanCollide = true; // Default to collidable
             instance.Size = new THREE.Vector3(4, 4, 4);
             instance.Position = placementPreview.position.clone();
@@ -1823,7 +2912,8 @@ function placePartAtMouse() {
                 RobloxEnvironment.physicsBodyManager.createBody(instance);
             }
 
-            // Apply visual feedback for collision state
+            // Apply visual feedback for anchored and collision state
+            updateAnchoredVisualFeedback(instance);
             updateCollisionVisualFeedback(instance);
             break;
 
@@ -1837,27 +2927,11 @@ function placePartAtMouse() {
             instance.ClassName = 'PointLight';
             break;
 
-        case 'sound':
-            // Sounds don't have visual representation, just create the instance
-            instance.type = 'sound';
-            instance.soundId = '';
-            instance.volume = 0.5;
-            instance.isPlaying = false;
-            instance.audio = null;
-            instance.ClassName = 'Sound';
-            break;
 
-        case 'model':
-            // Models are just containers
-            instance.type = 'model';
-            instance.ClassName = 'Model';
-            break;
-
-        case 'script':
-            // Scripts contain Lua code
-            instance.type = 'script';
-            instance.ClassName = 'Script';
-            instance.Source = '-- New script\nprint("Hello from script!")';
+        case 'folder':
+            // Folders are just organizational containers
+            instance.type = 'folder';
+            instance.ClassName = 'Folder';
             break;
     }
 
@@ -1869,14 +2943,6 @@ function placePartAtMouse() {
     addToWorkspaceTree(objectName, selectedToolboxItem);
 
     addOutput(`${selectedToolboxItem} "${objectName}" placed in workspace!`, 'success');
-
-    // If it's a script, open a dedicated tab with code editor
-    if (selectedToolboxItem === 'script') {
-        openScriptTab(instance);
-        addOutput(`Script "${instance.Name}" opened in editor`, 'success');
-        // Switch to the Script tab to show the main editor
-        switchTab('script');
-    }
 
     // Reset placement mode
     isPlacingPart = false;
@@ -1898,8 +2964,8 @@ function animate() {
         controls.update();
     }
 
-    // Step physics world
-    if (RobloxEnvironment.physicsWorld) {
+    // Step physics world only when running
+    if (RobloxEnvironment.running && RobloxEnvironment.physicsWorld) {
         console.log(`[PHYSICS] Stepping physics world, ${RobloxEnvironment.physicsWorld.bodies.length} bodies`);
         RobloxEnvironment.physicsWorld.step(1/60);
 
@@ -1912,14 +2978,14 @@ function animate() {
         RobloxEnvironment.physicsWorld.contacts.forEach(contact => {
             const bodyA = contact.bi;
             const bodyB = contact.bj;
-    
+
             // Find the RobloxInstance objects for these bodies
             let instanceA = null, instanceB = null;
             RobloxEnvironment.physicsBodyManager.bodies.forEach((body, instance) => {
                 if (body === bodyA) instanceA = instance;
                 if (body === bodyB) instanceB = instance;
             });
-    
+
             if (instanceA && instanceB) {
                 // Fire Touched events for both instances
                 if (instanceA.touchedConnections) {
@@ -1940,7 +3006,7 @@ function animate() {
                         }
                     });
                 }
-    
+
                 console.log(`[PHYSICS] Collision detected: ${instanceA.Name} touched ${instanceB.Name}`);
             }
         });
@@ -1997,12 +3063,6 @@ function stopGameLoop() {
     addOutput('Game loop stopped!', 'success');
 }
 
-function startStudioPhysics() {
-    console.log('[PHYSICS] Starting physics simulation in studio...');
-    RobloxEnvironment.running = true;
-    addOutput('Physics simulation started in studio!', 'success');
-    addOutput('Parts will now fall under gravity. Check console for [PHYSICS] logs.', 'success');
-}
 
 function setupEventListeners() {
     console.log('RoGold Studio: Setting up event listeners...');
@@ -2017,25 +3077,26 @@ function setupEventListeners() {
     });
 
     // Studio buttons
-    const playBtn = document.getElementById('play-btn');
-    if (playBtn) {
-        playBtn.addEventListener('click', (e) => {
-            console.log('RoGold Studio: Play button clicked - Event:', e);
-            console.log('RoGold Studio: Play button element:', playBtn);
-            // Start physics simulation in studio instead of opening game
-            startStudioPhysics();
+    const testPhysicsBtn = document.getElementById('test-physics-btn');
+    if (testPhysicsBtn) {
+        testPhysicsBtn.addEventListener('click', () => {
+            console.log('RoGold Studio: Test Physics button clicked');
+            if (RobloxEnvironment.running) {
+                // Stop physics
+                RobloxEnvironment.running = false;
+                testPhysicsBtn.textContent = 'Test Physics';
+                addOutput('Physics simulation stopped!', 'success');
+            } else {
+                // Start physics
+                RobloxEnvironment.running = true;
+                testPhysicsBtn.textContent = 'Stop Physics';
+                addOutput('Physics simulation started!', 'success');
+                addOutput('Parts will now fall under gravity. Check console for [PHYSICS] logs.', 'success');
+            }
         });
-        console.log('RoGold Studio: Play button event listener attached');
+        console.log('RoGold Studio: Test Physics button event listener attached');
     } else {
-        console.error('RoGold Studio: Play button not found!');
-    }
-
-    const stopBtn = document.getElementById('stop-btn');
-    if (stopBtn) {
-        stopBtn.addEventListener('click', () => {
-            console.log('RoGold Studio: Stop button clicked');
-            stopGame();
-        });
+        console.error('RoGold Studio: Test Physics button not found!');
     }
 
     const saveBtn = document.getElementById('save-btn');
@@ -2078,6 +3139,14 @@ function setupEventListeners() {
         });
     }
 
+    const settingsBtn = document.getElementById('settings-btn');
+    if (settingsBtn) {
+        settingsBtn.addEventListener('click', () => {
+            console.log('RoGold Studio: Settings button clicked');
+            openSettings();
+        });
+    }
+
     const backBtn = document.getElementById('back-btn');
     if (backBtn) {
         backBtn.addEventListener('click', () => {
@@ -2089,7 +3158,7 @@ function setupEventListeners() {
 
     // Toolbox items
     document.querySelectorAll('.toolbox-item').forEach(item => {
-        item.addEventListener('click', () => {
+        item.addEventListener('click', async () => {
             // Don't change tools if we're currently dragging
             if (isDragging) return;
 
@@ -2125,6 +3194,30 @@ function setupEventListeners() {
                 transformMode = 'scale';
                 activeGizmo = scaleGizmo;
                 addOutput('📏 Scale tool active - use gizmo circles', 'success');
+            } else if (type === 'folder' || type === 'model') {
+                // Folders and models are created immediately, not placed in viewport
+                if (type === 'folder') {
+                    createFolder();
+                } else if (type === 'model') {
+                    createModel();
+                }
+                // Don't change tool selection for folders/models
+                item.classList.remove('selected');
+                document.querySelector('[data-type="select"]').classList.add('selected');
+                selectedToolboxItem = 'select';
+                isPlacingPart = false;
+                transformMode = null;
+                activeGizmo = null;
+            } else if (type === 'script' || type === 'sound') {
+                // Scripts and sounds are created immediately, not placed in viewport
+                await createNonVisualObject(type);
+                // Don't change tool selection for scripts/sounds
+                item.classList.remove('selected');
+                document.querySelector('[data-type="select"]').classList.add('selected');
+                selectedToolboxItem = 'select';
+                isPlacingPart = false;
+                transformMode = null;
+                activeGizmo = null;
             } else {
                 isPlacingPart = true;
                 transformMode = null;
@@ -2138,13 +3231,22 @@ function setupEventListeners() {
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (event) => {
-        // Don't handle shortcuts if any Monaco editor is focused or publish dialog input is active
+        // Don't handle shortcuts if any Monaco editor is focused, publish dialog input is active, or property inputs are focused
         const activeElement = document.activeElement;
+        
+        // DEBUG: Log when typing in property inputs
+        if (activeElement && activeElement.id && activeElement.id.startsWith('prop-')) {
+            console.log('DEBUG: Property input focused, ignoring shortcuts:', activeElement.id);
+        }
+        
         if (activeElement && (
             activeElement.classList.contains('monaco-editor') ||
             activeElement.closest('.monaco-editor') ||
             activeElement.tagName === 'TEXTAREA' && activeElement.classList.contains('code-textarea') ||
-            activeElement.classList.contains('publish-dialog-input')
+            activeElement.classList.contains('publish-dialog-input') ||
+            // Don't handle shortcuts when typing in property inputs
+            (activeElement.id && activeElement.id.startsWith('prop-')) ||
+            (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'SELECT') && activeElement.closest('.properties-panel')
         )) {
             return;
         }
@@ -2158,6 +3260,16 @@ function setupEventListeners() {
         else if (event.key === 'F9') {
             event.preventDefault();
             clearScene();
+        }
+        // Ctrl/Cmd+D = Duplicate selection
+        else if ((event.ctrlKey || event.metaKey) && (event.key === 'd' || event.key === 'D')) {
+            event.preventDefault();
+            duplicateSelection();
+        }
+        // Ctrl/Cmd+G = Group selection into model
+        else if ((event.ctrlKey || event.metaKey) && (event.key === 'g' || event.key === 'G')) {
+            event.preventDefault();
+            groupSelectionIntoModel();
         }
         // Tool shortcuts
         else if (event.key === 'q' || event.key === 'Q') {
@@ -2191,6 +3303,44 @@ function setupEventListeners() {
             addOutput('Selection cleared', 'success');
         }
     });
+
+    // Name input event listener
+    const nameInput = document.getElementById('prop-name');
+    if (nameInput) {
+        nameInput.addEventListener('input', (e) => {
+            if (selectedObjects.size > 0) {
+                const selectedObj = Array.from(selectedObjects)[0];
+                const oldName = selectedObj.Name;
+                const newName = e.target.value.trim();
+                
+                if (newName && newName !== oldName) {
+                    // Update the object's Name
+                    selectedObj.Name = newName;
+                    
+                    // Update luaObjects key
+                    if (luaObjects[oldName] === selectedObj) {
+                        delete luaObjects[oldName];
+                        luaObjects[newName] = selectedObj;
+                    }
+                    
+                    // Update the tree view
+                    const treeItem = document.querySelector(`[data-object-name="${oldName}"]`);
+                    if (treeItem) {
+                        treeItem.textContent = newName;
+                        treeItem.dataset.objectName = newName;
+                    }
+                    
+                    // Update selection reference
+                    selectedObjects.delete(selectedObj);
+                    selectedObj.Name = newName;
+                    selectedObjects.add(selectedObj);
+                    
+                    console.log(`Renamed object: ${oldName} -> ${newName}`);
+                    addOutput(`Renamed object to: ${newName}`, 'success');
+                }
+            }
+        });
+    }
 
     // Size input event listeners
     const sizeXInput = document.getElementById('prop-size-x');
@@ -2289,6 +3439,51 @@ function setupEventListeners() {
 
     // CanCollide checkbox event listener is handled in updatePropertiesPanel
 
+    // Transparency input event listener
+    const transparencyInput = document.getElementById('prop-transparency');
+    if (transparencyInput) {
+        transparencyInput.addEventListener('input', (e) => {
+            if (selectedObjects.size > 0) {
+                const selectedObj = Array.from(selectedObjects)[0];
+                
+                // Handle 3D parts transparency
+                if (selectedObj.threeObject && selectedObj.threeObject.material) {
+                    selectedObj.Transparency = parseFloat(e.target.value) || 0;
+                    selectedObj.threeObject.material.transparent = true;
+                    selectedObj.threeObject.material.opacity = 1 - selectedObj.Transparency;
+                }
+                
+                // Handle GUI background transparency
+                if (selectedObj instanceof GuiObject || 
+                    ['Frame', 'TextLabel', 'TextButton', 'ScreenGui'].includes(selectedObj.ClassName)) {
+                    selectedObj.BackgroundTransparency = parseFloat(e.target.value) || 0;
+                    if (selectedObj.element) {
+                        selectedObj.element.style.opacity = 1 - selectedObj.BackgroundTransparency;
+                    }
+                    console.log(`Set BackgroundTransparency for ${selectedObj.Name} to ${selectedObj.BackgroundTransparency}`);
+                }
+            }
+        });
+    }
+
+    // Background Transparency input event listener
+    const bgTransparencyInput = document.getElementById('prop-background-transparency');
+    if (bgTransparencyInput) {
+        bgTransparencyInput.addEventListener('input', (e) => {
+            if (selectedObjects.size > 0) {
+                const selectedObj = Array.from(selectedObjects)[0];
+                if (selectedObj instanceof GuiObject || 
+                    ['Frame', 'TextLabel', 'TextButton', 'ScreenGui'].includes(selectedObj.ClassName)) {
+                    selectedObj.BackgroundTransparency = parseFloat(e.target.value) || 0;
+                    if (selectedObj.element) {
+                        selectedObj.element.style.opacity = 1 - selectedObj.BackgroundTransparency;
+                    }
+                    console.log(`Set BackgroundTransparency for ${selectedObj.Name} to ${selectedObj.BackgroundTransparency}`);
+                }
+            }
+        });
+    }
+
     // Script source editing
     const scriptSourceTextarea = document.getElementById('script-source');
     if (scriptSourceTextarea) {
@@ -2305,11 +3500,26 @@ function setupEventListeners() {
 
     // Window resize
     window.addEventListener('resize', () => {
-        if (renderer && camera) {
+        // Only update renderer and camera when viewport tab is visible
+        if (currentTab !== 'viewport') return;
+
+        const viewportTab = document.getElementById('viewport-tab');
+        const isVisible = viewportTab && !viewportTab.classList.contains('hidden');
+        console.log(`[RESIZE] Window resize event fired. Viewport visible: ${isVisible}`);
+        if (renderer && camera && isVisible) {
             const canvas = document.getElementById('viewport-canvas');
-            camera.aspect = canvas.clientWidth / canvas.clientHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+            const container = canvas.parentElement;
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            console.log(`[RESIZE] Container size: ${width}x${height}`);
+            if (width > 0 && height > 0) {
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+                renderer.setSize(width, height);
+                console.log(`[RESIZE] Updated renderer to ${width}x${height}`);
+            } else {
+                console.log(`[RESIZE] Skipping resize: zero size`);
+            }
         }
     });
 
@@ -2317,6 +3527,7 @@ function setupEventListeners() {
 }
 
 function switchTab(tabName) {
+    console.log(`[DEBUG] switchTab called with tabName: ${tabName}`);
     currentTab = tabName;
 
     // Update tab styles
@@ -2326,14 +3537,47 @@ function switchTab(tabName) {
     const activeTab = document.querySelector(`[data-tab="${tabName}"]`);
     if (activeTab) {
         activeTab.classList.add('active');
+        console.log(`[DEBUG] Activated tab: ${tabName}`);
+    } else {
+        console.log(`[DEBUG] No tab found with data-tab="${tabName}"`);
     }
 
     // Show/hide content
     const viewportTab = document.getElementById('viewport-tab');
-    const scriptTab = document.getElementById('script-tab');
+    if (viewportTab) {
+        const shouldHideViewport = tabName !== 'viewport';
+        viewportTab.classList.toggle('hidden', shouldHideViewport);
+        console.log(`[DEBUG] Viewport tab ${shouldHideViewport ? 'hidden' : 'shown'}`);
+    } else {
+        console.log(`[DEBUG] Viewport tab not found`);
+    }
 
-    if (viewportTab) viewportTab.classList.toggle('hidden', tabName !== 'viewport');
-    if (scriptTab) scriptTab.classList.toggle('hidden', tabName !== 'script');
+    // Handle script editor visibility
+    if (tabName === 'viewport') {
+        // Hide all script editors
+        document.querySelectorAll('.code-editor').forEach(editor => {
+            editor.classList.add('hidden');
+            console.log(`[DEBUG] Hidden script editor: ${editor.id}`);
+        });
+    } else if (tabName.startsWith('script-')) {
+        // Hide viewport and show only the active script editor
+        if (viewportTab) viewportTab.classList.add('hidden');
+
+        // Hide all script editors first
+        document.querySelectorAll('.code-editor').forEach(editor => {
+            editor.classList.add('hidden');
+        });
+
+        // Show the active script editor
+        const scriptName = tabName.replace('script-', '');
+        const activeEditor = document.getElementById(`script-tab-${scriptName}`);
+        if (activeEditor) {
+            activeEditor.classList.remove('hidden');
+            console.log(`[DEBUG] Shown script editor: script-tab-${scriptName}`);
+        } else {
+            console.log(`[DEBUG] Script editor not found: script-tab-${scriptName}`);
+        }
+    }
 
     // Resize renderer when switching to viewport
     if (tabName === 'viewport' && renderer && camera) {
@@ -2347,15 +3591,9 @@ function switchTab(tabName) {
                 camera.aspect = width / height;
                 camera.updateProjectionMatrix();
                 renderer.setSize(width, height);
+                console.log(`[DEBUG] Resized renderer to ${width}x${height}`);
             }, 100);
         }
-    }
-
-    // Resize Monaco Editor when switching to script tab
-    if (tabName === 'script' && window.monacoEditor) {
-        setTimeout(() => {
-            window.monacoEditor.layout();
-        }, 100);
     }
 }
 
@@ -2414,17 +3652,14 @@ function saveProject() {
         }
     });
 
-    // Also save the main script editor content
-    if (window.monacoEditor) {
-        scripts['Main Script'] = window.monacoEditor.getValue();
-    }
-
     const projectData = {
         scripts: scripts,
         objects: luaObjects,
         timestamp: new Date().toISOString(),
-        version: '1.0',
-        studio: 'RoGold Studio'
+        // Use ENGINE_VERSION instead of hardcoded '1.0'
+        engineVersion: ENGINE_VERSION,
+        studio: 'RoGold Studio',
+        ...createVersionInfo()
     };
 
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -2448,28 +3683,31 @@ function serializeGameState() {
         }
     });
 
-    // Also save the main script editor content
-    if (window.monacoEditor) {
-        scripts['Main Script'] = window.monacoEditor.getValue();
-    }
-
     // Serialize objects without circular references
     const serializedObjects = {};
     Object.entries(luaObjects).forEach(([name, obj]) => {
         serializedObjects[name] = {
             ClassName: obj.ClassName,
             Name: obj.Name,
+            Parent: obj.Parent ? obj.Parent.Name : null,
             Anchored: obj.Anchored,
             CanCollide: obj.CanCollide,
-            Size: obj.Size ? obj.Size.toArray() : [4, 2, 2],
-            Position: obj.Position ? obj.Position.toArray() : [0, 5, 0],
+            Size: obj.Size ? (obj.Size.toArray ? obj.Size.toArray() : [obj.Size.x || 100, obj.Size.y || 100, obj.Size.z || 4]) : [4, 2, 2],
+            Position: obj.Position ? (obj.Position.toArray ? obj.Position.toArray() : [obj.Position.x || 0, obj.Position.y || 0, obj.Position.z || 0]) : [0, 5, 0],
             Rotation: obj.Rotation ? [obj.Rotation.x, obj.Rotation.y, obj.Rotation.z] : [0, 0, 0],
             Color: obj.Color ? obj.Color.toArray() : [0.5, 0.5, 0.5],
             Transparency: obj.Transparency || 0,
+            // GUI-specific properties
+            BackgroundTransparency: obj.BackgroundTransparency !== undefined ? obj.BackgroundTransparency : null,
+            TextTransparency: obj.TextTransparency !== undefined ? obj.TextTransparency : null,
+            TextColor3: obj.TextColor3 ? obj.TextColor3.toArray() : null,
+            TextSize: obj.TextSize || null,
+            Text: obj.Text || '',
             Source: obj.Source || '',
             type: obj.type || '',
             soundId: obj.soundId || '',
             volume: obj.volume || 0.5,
+            looping: obj.looping || false,
             isPlaying: obj.isPlaying || false
         };
     });
@@ -2477,8 +3715,12 @@ function serializeGameState() {
     return {
         scripts: scripts,
         objects: serializedObjects,
+        settings: JSON.parse(localStorage.getItem('rogold_studio_settings') || '{}'),
         timestamp: new Date().toISOString(),
-        version: '1.0'
+        // Use ENGINE_VERSION instead of hardcoded '1.0'
+        engineVersion: ENGINE_VERSION,
+        gameVersion: '1.0',
+        ...createVersionInfo()
     };
 }
 
@@ -2620,6 +3862,31 @@ function showPublishDialog(defaultThumbnail = null) {
             box-sizing: border-box;
         `;
 
+        const descriptionLabel = document.createElement('label');
+        descriptionLabel.textContent = 'Game Description:';
+        descriptionLabel.style.cssText = `
+            display: block;
+            margin: 10px 0 5px 0;
+            font-weight: bold;
+        `;
+
+        const descriptionTextarea = document.createElement('textarea');
+        descriptionTextarea.placeholder = 'Enter a description for your game...';
+        descriptionTextarea.value = '';
+        descriptionTextarea.className = 'publish-dialog-input';
+        descriptionTextarea.maxLength = 500;
+        descriptionTextarea.rows = 3;
+        descriptionTextarea.style.cssText = `
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+            resize: vertical;
+            font-family: inherit;
+        `;
+
         const thumbnailLabel = document.createElement('label');
         thumbnailLabel.textContent = 'Game Thumbnail:';
         thumbnailLabel.style.cssText = `
@@ -2704,12 +3971,15 @@ function showPublishDialog(defaultThumbnail = null) {
         `;
 
         cancelBtn.onclick = () => {
-            document.body.removeChild(modal);
+            if (document.body && modal.parentNode === document.body) {
+                document.body.removeChild(modal);
+            }
             resolve(null);
         };
 
         publishBtn.onclick = async () => {
             const gameTitle = input.value.trim() || 'Untitled Game';
+            const gameDescription = descriptionTextarea.value.trim() || '';
             let thumbnailData = defaultThumbnail; // Use default if no custom uploaded
 
             if (thumbnailInput.files[0]) {
@@ -2720,8 +3990,10 @@ function showPublishDialog(defaultThumbnail = null) {
                 });
             }
 
-            document.body.removeChild(modal);
-            resolve({ title: gameTitle, thumbnail: thumbnailData });
+            if (document.body && modal.parentNode === document.body) {
+                document.body.removeChild(modal);
+            }
+            resolve({ title: gameTitle, description: gameDescription, thumbnail: thumbnailData });
         };
 
         input.onkeydown = (e) => {
@@ -2736,15 +4008,169 @@ function showPublishDialog(defaultThumbnail = null) {
         buttonContainer.appendChild(publishBtn);
         dialog.appendChild(title);
         dialog.appendChild(input);
+        dialog.appendChild(descriptionLabel);
+        dialog.appendChild(descriptionTextarea);
         dialog.appendChild(thumbnailLabel);
         dialog.appendChild(thumbnailInput);
         dialog.appendChild(thumbnailPreview);
         dialog.appendChild(buttonContainer);
         modal.appendChild(dialog);
-        document.body.appendChild(modal);
+        if (document.body) {
+            document.body.appendChild(modal);
+        }
 
         // Focus input
         setTimeout(() => input.focus(), 100);
+    });
+}
+
+function showAudioWarningDialog() {
+    return new Promise((resolve) => {
+        // Create modal dialog
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+        `;
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = `
+            background: #ece9d8;
+            border: 2px outset #c0c0c0;
+            padding: 16px;
+            max-width: 450px;
+            width: 90%;
+            font-family: Tahoma, sans-serif;
+            font-size: 11px;
+        `;
+
+        const title = document.createElement('div');
+        title.textContent = 'Audio Content Warning';
+        title.style.cssText = `
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 12px;
+            text-align: center;
+            color: #000000;
+        `;
+
+        // Add warning icon
+        const icon = document.createElement('div');
+        icon.textContent = '⚠️';
+        icon.style.cssText = `
+            font-size: 24px;
+            text-align: center;
+            margin-bottom: 8px;
+        `;
+        title.insertBefore(icon, title.firstChild);
+
+        const message = document.createElement('div');
+        message.innerHTML = `
+            <div style="margin-bottom: 12px; line-height: 1.4;">
+                <strong>Important:</strong> Audios are loaded from URLs. Please follow these rules:
+            </div>
+            <ul style="margin: 0 0 16px 0; padding-left: 16px; line-height: 1.5;">
+                <li><strong>NO NSFW content</strong> - Not Safe For Work material is strictly prohibited</li>
+                <li><strong>NO loud or disturbing audio</strong> - Keep volumes reasonable</li>
+                <li><strong>NO copyrighted material</strong> - Only use content you have permission to use</li>
+            </ul>
+            <div style="margin-bottom: 16px; color: #800000; font-weight: bold; background: #ffe4e1; padding: 8px; border: 1px solid #c0c0c0;">
+                ⚠️ Violation of these rules will result in immediate account termination.
+            </div>
+            <div style="margin: 0; color: #666666; font-size: 10px;">
+                Please respect these guidelines to maintain a safe and enjoyable environment for all users.
+            </div>
+        `;
+
+        const dontShowContainer = document.createElement('div');
+        dontShowContainer.style.cssText = `
+            margin: 12px 0;
+            text-align: center;
+        `;
+
+        const dontShowCheckbox = document.createElement('input');
+        dontShowCheckbox.type = 'checkbox';
+        dontShowCheckbox.id = 'audio-warning-dont-show';
+        dontShowCheckbox.style.cssText = `
+            margin-right: 6px;
+        `;
+
+        const dontShowLabel = document.createElement('label');
+        dontShowLabel.htmlFor = 'audio-warning-dont-show';
+        dontShowLabel.textContent = "Don't show this warning again";
+        dontShowLabel.style.cssText = `
+            font-size: 11px;
+            color: #000000;
+            cursor: pointer;
+            user-select: none;
+        `;
+
+        dontShowContainer.appendChild(dontShowCheckbox);
+        dontShowContainer.appendChild(dontShowLabel);
+
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = `
+            text-align: center;
+            margin-top: 16px;
+        `;
+
+        const okButton = document.createElement('button');
+        okButton.textContent = 'I Understand';
+        okButton.style.cssText = `
+            background: #ece9d8;
+            color: #000000;
+            border: 1px outset #c0c0c0;
+            padding: 4px 16px;
+            cursor: pointer;
+            font-size: 11px;
+            font-family: Tahoma, sans-serif;
+            min-width: 80px;
+        `;
+        okButton.onmouseover = () => okButton.style.border = '1px inset #c0c0c0';
+        okButton.onmouseout = () => okButton.style.border = '1px outset #c0c0c0';
+        okButton.onmousedown = () => okButton.style.border = '1px inset #c0c0c0';
+        okButton.onmouseup = () => okButton.style.border = '1px outset #c0c0c0';
+        okButton.onclick = () => {
+            // Save preference if checkbox is checked
+            if (dontShowCheckbox.checked) {
+                localStorage.setItem('rogold_audio_warning_dismissed', 'true');
+            }
+            if (document.body && modal.parentNode === document.body) {
+                document.body.removeChild(modal);
+            }
+            resolve();
+        };
+
+        buttonContainer.appendChild(okButton);
+        dialog.appendChild(title);
+        dialog.appendChild(message);
+        dialog.appendChild(dontShowContainer);
+        dialog.appendChild(buttonContainer);
+        modal.appendChild(dialog);
+
+        if (document.body) {
+            document.body.appendChild(modal);
+        }
+
+        // Allow closing with Escape key
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                if (document.body && modal.parentNode === document.body) {
+                    document.body.removeChild(modal);
+                }
+                document.removeEventListener('keydown', handleEscape);
+                resolve();
+            }
+        };
+        document.addEventListener('keydown', handleEscape);
     });
 }
 
@@ -2766,7 +4192,9 @@ function showPublishProgress(message) {
             z-index: 10001;
             text-align: center;
         `;
-        document.body.appendChild(progressDialog);
+        if (document.body) {
+            document.body.appendChild(progressDialog);
+        }
     }
 
     progressDialog.innerHTML = `
@@ -2792,11 +4220,11 @@ function showPublishProgress(message) {
 
 function hidePublishProgress() {
     const progressDialog = document.getElementById('publish-progress-dialog');
-    if (progressDialog) {
+    if (progressDialog && document.body && progressDialog.parentNode === document.body) {
         document.body.removeChild(progressDialog);
     }
     const style = document.getElementById('publish-progress-style');
-    if (style) {
+    if (style && document.head) {
         document.head.removeChild(style);
     }
 }
@@ -2820,25 +4248,39 @@ function showPublishResult(success, message) {
     const icon = success ? '✅' : '❌';
     const title = success ? 'Success!' : 'Error';
 
-    resultDialog.innerHTML = `
+    const contentDiv = document.createElement('div');
+    contentDiv.innerHTML = `
         <div style="font-size: 48px; margin-bottom: 10px;">${icon}</div>
         <h3 style="margin: 0 0 10px 0; color: ${success ? '#28a745' : '#dc3545'};">${title}</h3>
         <div style="margin-bottom: 20px;">${message}</div>
-        <button style="
-            padding: 8px 16px;
-            border: none;
-            background: #007bff;
-            color: white;
-            border-radius: 4px;
-            cursor: pointer;
-        " onclick="this.parentElement.parentElement.remove()">OK</button>
     `;
 
-    document.body.appendChild(resultDialog);
+    const okButton = document.createElement('button');
+    okButton.style.cssText = `
+        padding: 8px 16px;
+        border: none;
+        background: #007bff;
+        color: white;
+        border-radius: 4px;
+        cursor: pointer;
+    `;
+    okButton.textContent = 'OK';
+    okButton.onclick = () => {
+        if (document.body && resultDialog.parentNode === document.body) {
+            document.body.removeChild(resultDialog);
+        }
+    };
+
+    contentDiv.appendChild(okButton);
+    resultDialog.appendChild(contentDiv);
+
+    if (document.body) {
+        document.body.appendChild(resultDialog);
+    }
 
     // Auto-remove after 5 seconds
     setTimeout(() => {
-        if (resultDialog.parentElement) {
+        if (resultDialog.parentElement && document.body && resultDialog.parentNode === document.body) {
             document.body.removeChild(resultDialog);
         }
     }, 5000);
@@ -2849,13 +4291,13 @@ async function publishProject() {
         // Generate automatic thumbnail from current scene
         const autoThumbnail = generateSceneScreenshot();
 
-        // Show publish dialog to get game title and thumbnail
+        // Show publish dialog to get game title, description and thumbnail
         const publishData = await showPublishDialog(autoThumbnail);
         if (!publishData) {
             return; // User cancelled
         }
 
-        const { title: gameTitle, thumbnail: customThumbnail } = publishData;
+        const { title: gameTitle, description: gameDescription, thumbnail: customThumbnail } = publishData;
 
         // Show progress indicator
         showPublishProgress('Preparing game data...');
@@ -2863,13 +4305,22 @@ async function publishProject() {
         // Serialize game state
         const gameData = serializeGameState();
 
+        // Get current user (assuming it's stored in localStorage or similar)
+        const currentUser = localStorage.getItem('rogold_currentUser');
+        if (!currentUser) {
+            showPublishResult(false, 'You must be logged in to publish a game.');
+            return;
+        }
+
         // Prepare project data - use custom thumbnail if uploaded, otherwise use auto-generated
         const projectData = {
             title: gameTitle,
+            description: gameDescription,
             ...gameData,
             published: true,
             gameId: 'game_' + Date.now(),
-            thumbnail: customThumbnail || autoThumbnail // Use custom if uploaded, otherwise auto-generated
+            thumbnail: customThumbnail || autoThumbnail, // Use custom if uploaded, otherwise auto-generated
+            creator_id: currentUser // Add creator ID
         };
 
         // Update progress
@@ -2911,13 +4362,8 @@ async function publishProject() {
 }
 
 function testProject() {
-    // Save current studio state for testing - exclude main script editor content
+    // Save current studio state for testing
     const testData = serializeGameState();
-
-    // Remove the main script editor content for test mode (only execute created Script objects)
-    if (testData.scripts && testData.scripts['Main Script']) {
-        delete testData.scripts['Main Script'];
-    }
 
     // Store in sessionStorage for the test game to access
     sessionStorage.setItem('rogold_studio_test', JSON.stringify(testData));
@@ -2927,31 +4373,169 @@ function testProject() {
     window.open(gameUrl, '_blank');
 }
 
+async function loadGameFromURL(gameId) {
+    try {
+        addOutput(`Loading game ${gameId} from server...`, 'success');
+
+        // Fetch game data from API
+        const response = await fetch(`/api/games/${gameId}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch game: ${response.status} ${response.statusText}`);
+        }
+
+        const gameData = await response.json();
+        addOutput(`Game data received, loading into studio...`, 'success');
+
+        // Clear current scene first
+        clearScene();
+
+        // Load scripts
+        if (gameData.scripts) {
+            Object.entries(gameData.scripts).forEach(([name, source]) => {
+                // Create script object if it doesn't exist
+                if (!luaObjects[name]) {
+                    const scriptInstance = new RobloxInstance('Script', name);
+                    scriptInstance.Source = source;
+                    scriptInstance.ClassName = 'Script';
+                    luaObjects[name] = scriptInstance;
+
+                    // Add to workspace
+                    RobloxEnvironment.Workspace.Children.push(scriptInstance);
+                    addToWorkspaceTree(name, 'script');
+                } else {
+                    // Update existing script
+                    luaObjects[name].Source = source;
+                }
+            });
+        }
+
+        // Load objects
+        if (gameData.objects) {
+            Object.entries(gameData.objects).forEach(([name, objData]) => {
+                if (!luaObjects[name]) {
+                    // Recreate the object
+                    const instance = new RobloxInstance(objData.ClassName || 'Part', name);
+
+                    // Restore properties
+                    if (objData.Size) instance.Size = new THREE.Vector3().fromArray(objData.Size);
+                    if (objData.Position) instance.Position = new THREE.Vector3().fromArray(objData.Position);
+                    if (objData.Rotation) instance.Rotation = new THREE.Euler(objData.Rotation[0], objData.Rotation[1], objData.Rotation[2]);
+                    if (objData.Color) instance.Color = new THREE.Color().fromArray(objData.Color);
+                    if (objData.Anchored !== undefined) instance.Anchored = objData.Anchored;
+                    if (objData.CanCollide !== undefined) instance.CanCollide = objData.CanCollide;
+                    if (objData.Transparency !== undefined) instance.Transparency = objData.Transparency;
+                    if (objData.Source !== undefined) instance.Source = objData.Source;
+                    if (objData.Mass !== undefined) instance.Mass = objData.Mass;
+                    if (objData.Friction !== undefined) instance.Friction = objData.Friction;
+                    if (objData.Restitution !== undefined) instance.Restitution = objData.Restitution;
+
+                    // Restore sound properties for Sound objects
+                    if (objData.soundId !== undefined) instance.soundId = objData.soundId;
+                    if (objData.volume !== undefined) instance.volume = objData.volume;
+                    if (objData.looping !== undefined) instance.looping = objData.looping;
+                    if (objData.isPlaying !== undefined) instance.isPlaying = objData.isPlaying;
+                    
+                    // Restore GUI properties
+                    if (objData.BackgroundTransparency !== undefined) instance.BackgroundTransparency = objData.BackgroundTransparency;
+                    if (objData.TextTransparency !== undefined) instance.TextTransparency = objData.TextTransparency;
+                    if (objData.TextColor3 !== undefined) instance.TextColor3 = new THREE.Color().fromArray(objData.TextColor3);
+                    if (objData.TextSize !== undefined) instance.TextSize = objData.TextSize;
+                    if (objData.Text !== undefined) instance.Text = objData.Text;
+
+                    luaObjects[name] = instance;
+
+                    // Create 3D representation for parts
+                    if (instance.ClassName === 'Part') {
+                        const geometry = new THREE.BoxGeometry(
+                            instance.Size.x,
+                            instance.Size.y,
+                            instance.Size.z
+                        );
+                        const material = new THREE.MeshLambertMaterial({
+                            color: instance.Color,
+                            transparent: instance.Transparency > 0,
+                            opacity: 1 - instance.Transparency
+                        });
+                        const part = new THREE.Mesh(geometry, material);
+                        part.position.copy(instance.Position);
+                        part.rotation.copy(instance.Rotation);
+                        part.castShadow = true;
+                        part.receiveShadow = true;
+                        scene.add(part);
+                        instance.threeObject = part;
+
+                        // Create physics body
+                        if (RobloxEnvironment.physicsBodyManager) {
+                            RobloxEnvironment.physicsBodyManager.createBody(instance);
+                        }
+
+                        // Apply visual feedback for anchored/collision state
+                        updateAnchoredVisualFeedback(instance);
+                        updateCollisionVisualFeedback(instance);
+                    }
+
+                    // Handle Sound objects (no 3D representation needed)
+                    if (instance.ClassName === 'Sound') {
+                        instance.type = 'sound';
+                        instance.audio = null;
+                    }
+
+                    // Add to workspace if it's a child of workspace
+                    // Check for both string "Workspace" and object RobloxEnvironment.Workspace
+                    // Also handle case where Parent is null/undefined (newly saved games)
+                    if (!objData.Parent || objData.Parent === 'Workspace' || objData.Parent === RobloxEnvironment.Workspace) {
+                        RobloxEnvironment.Workspace.Children.push(instance);
+                        addToWorkspaceTree(name, instance.ClassName.toLowerCase());
+                    }
+                }
+            });
+        }
+
+        // Select the first sound object if any exist to show sound properties
+        const soundObjects = Object.values(luaObjects).filter(obj => obj.ClassName === 'Sound');
+        if (soundObjects.length > 0) {
+            // Clear current selection and select the first sound
+            selectedObjects.clear();
+            selectedObjects.add(soundObjects[0]);
+        }
+
+        // Update properties panel to show sound controls if needed
+        updatePropertiesPanel();
+
+        addOutput(`Game "${gameData.title || gameId}" loaded successfully!`, 'success');
+        addOutput('Studio is ready for editing.', 'success');
+
+    } catch (error) {
+        console.error('Error loading game from URL:', error);
+        addOutput(`Error loading game: ${error.message}`, 'error');
+    }
+}
+
 function loadProject() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json';
+    input.accept = ''; // Accept any file type
 
     input.onchange = (e) => {
         const file = e.target.files[0];
         if (file) {
             const reader = new FileReader();
             reader.onload = (e) => {
-                try {
-                    const projectData = JSON.parse(e.target.result);
+                const fileContent = e.target.result;
+                const fileName = file.name;
 
+                // Try to parse as JSON first
+                try {
+                    const projectData = JSON.parse(fileContent);
+
+                    // Handle JSON project file
                     // Clear current scene first
                     clearScene();
 
                     // Load scripts
                     if (projectData.scripts) {
                         Object.entries(projectData.scripts).forEach(([name, source]) => {
-                            if (name === 'Main Script') {
-                                    // Load into main script editor
-                                    if (window.monacoEditor) {
-                                        window.monacoEditor.setValue(source);
-                                    }
-                                } else if (luaObjects[name] && luaObjects[name].ClassName === 'Script') {
+                            if (luaObjects[name] && luaObjects[name].ClassName === 'Script') {
                                 luaObjects[name].Source = source;
                             }
                         });
@@ -2967,7 +4551,9 @@ function loadProject() {
                                 luaObjects[name] = instance;
 
                                 // Add to workspace if it's a child of workspace
-                                if (objData.Parent === RobloxEnvironment.Workspace) {
+                                // Check for both string "Workspace" and object RobloxEnvironment.Workspace
+                                // Also handle case where Parent is null/undefined (newly saved games)
+                                if (!objData.Parent || objData.Parent === 'Workspace' || objData.Parent === RobloxEnvironment.Workspace) {
                                     RobloxEnvironment.Workspace.Children.push(instance);
                                     addToWorkspaceTree(name, objData.ClassName.toLowerCase());
                                 }
@@ -2975,9 +4561,33 @@ function loadProject() {
                         });
                     }
 
-                    addOutput('Project loaded!', 'success');
-                } catch (error) {
-                    addOutput('Error loading project: ' + error.message, 'error');
+                    // Select the first sound object if any exist to show sound properties
+                    const soundObjects = Object.values(luaObjects).filter(obj => obj.ClassName === 'Sound');
+                    if (soundObjects.length > 0) {
+                        // Clear current selection and select the first sound
+                        selectedObjects.clear();
+                        selectedObjects.add(soundObjects[0]);
+                    }
+
+                    // Update the properties panel to reflect loaded data
+                    updatePropertiesPanel();
+
+                    addOutput('Project loaded successfully!', 'success');
+                } catch (jsonError) {
+                    // If JSON parsing fails, treat as Lua script
+                    const scriptName = fileName.replace(/\.[^/.]+$/, ''); // Remove file extension
+                    const scriptInstance = new RobloxInstance('Script', scriptName);
+                    scriptInstance.Source = fileContent;
+                    scriptInstance.ClassName = 'Script';
+                    luaObjects[scriptName] = scriptInstance;
+
+                    // Add to workspace
+                    RobloxEnvironment.Workspace.Children.push(scriptInstance);
+                    addToWorkspaceTree(scriptName, 'script');
+
+                    // Open the script in a dedicated tab
+                    openScriptTab(scriptInstance);
+                    addOutput(`Lua script "${scriptName}" loaded and opened in editor!`, 'success');
                 }
             };
             reader.readAsText(file);
@@ -2994,8 +4604,8 @@ function addToScene(type) {
         case 'part':
             script = `local part = Instance.new('Part')
 
-
-
+part.Anchored = false
+part.CanCollide = true
 part.Position = Vector3.new(0, 5, 0)
 part.Size = Vector3.new(4, 2, 4)
 part.Color = Color3.new(1, 0.5, 0)
@@ -3205,20 +4815,22 @@ function extractFunctionBody(lines, startIndex) {
     const body = [];
     let braceCount = 0;
     let inFunction = false;
+    let startedBody = false;
 
     for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i];
 
-        if (line.includes('function') || line.includes('do')) {
-            inFunction = true;
+        if ((line.includes('function') || line.includes('do')) && !startedBody) {
+            startedBody = true;
             braceCount++;
+            continue; // Skip the function definition or do keyword line
         }
 
-        if (inFunction) {
+        if (startedBody) {
             body.push(line);
         }
 
-        if (line.includes('end')) {
+        if (line.trim() === 'end' && startedBody) {
             braceCount--;
             if (braceCount === 0) {
                 break;
@@ -3232,31 +4844,32 @@ function extractFunctionBody(lines, startIndex) {
 function countFunctionLines(lines, startIndex) {
     let count = 0;
     let braceCount = 0;
+    let startedBody = false;
 
     for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i];
-        count++;
-
-        if (line.includes('function') || line.includes('do')) {
-            braceCount++;
+        
+        // Skip the function definition or do keyword line itself
+        if ((line.includes('function') || line.includes('do')) && !startedBody) {
+            startedBody = true;
+            continue;
         }
 
-        if (line.includes('end')) {
-            braceCount--;
-            if (braceCount === 0) {
-                break;
-            }
+        count++;
+
+        if (line.trim() === 'end') {
+            break;
         }
     }
 
     return count;
 }
 
-function executeLuaActions(actions) {
+async function executeLuaActions(actions) {
     const variables = {};
     const functions = {};
 
-    actions.forEach(action => {
+    for (const action of actions) {
         try {
             switch (action.type) {
                 case 'create_instance':
@@ -3338,7 +4951,11 @@ function executeLuaActions(actions) {
                                 } else if (value instanceof THREE.Vector3) {
                                     targetObj.Size = value;
                                     if (targetObj.threeObject) {
-                                        targetObj.threeObject.scale.copy(value).multiplyScalar(0.5);
+                                        targetObj.threeObject.scale.copy(value).divideScalar(4);
+                                    }
+                                    // Update physics body through manager
+                                    if (RobloxEnvironment.physicsBodyManager) {
+                                        RobloxEnvironment.physicsBodyManager.updateBody(targetObj);
                                     }
                                 }
                                 break;
@@ -3351,18 +4968,71 @@ function executeLuaActions(actions) {
                                 }
                                 break;
                             case 'Transparency':
+                            case 'transparency':
                                 targetObj.Transparency = parseFloat(value) || 0;
                                 if (targetObj.threeObject && targetObj.threeObject.material) {
                                     targetObj.threeObject.material.transparent = true;
                                     targetObj.threeObject.material.opacity = 1 - targetObj.Transparency;
                                 }
+                                // Also apply to GUI DOM elements
+                                if (targetObj.element) {
+                                    targetObj.element.style.opacity = 1 - targetObj.Transparency;
+                                }
+                                break;
+                            case 'BackgroundTransparency':
+                                targetObj.BackgroundTransparency = parseFloat(value) || 0;
+                                if (targetObj.updateStyle) {
+                                    targetObj.updateStyle();
+                                }
+                                if (targetObj.element) {
+                                    targetObj.element.style.opacity = 1 - targetObj.BackgroundTransparency;
+                                }
+                                break;
+                            case 'TextColor3':
+                                // Handle Color3.new(r, g, b) format
+                                if (typeof value === 'string' && value.startsWith('Color3.new')) {
+                                    const colorMatch = value.match(/Color3\.new\(([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+                                    if (colorMatch) {
+                                        const r = parseFloat(colorMatch[1]) || 0;
+                                        const g = parseFloat(colorMatch[2]) || 0;
+                                        const b = parseFloat(colorMatch[3]) || 0;
+                                        targetObj.TextColor3 = new THREE.Color(r, g, b);
+                                    }
+                                } else if (value instanceof THREE.Color) {
+                                    targetObj.TextColor3 = value;
+                                }
+                                if (targetObj.updateStyle) {
+                                    targetObj.updateStyle();
+                                }
+                                if (targetObj.element && targetObj.TextColor3) {
+                                    const hex = '#' + targetObj.TextColor3.getHexString();
+                                    targetObj.element.style.color = hex;
+                                }
+                                break;
+                            case 'TextSize':
+                                targetObj.TextSize = parseInt(value) || 14;
+                                if (targetObj.updateStyle) {
+                                    targetObj.updateStyle();
+                                }
+                                if (targetObj.element) {
+                                    targetObj.element.style.fontSize = targetObj.TextSize + 'px';
+                                }
                                 break;
                             case 'Anchored':
                                 targetObj.Anchored = value === 'true' || value === true;
+                                updateAnchoredVisualFeedback(targetObj);
+                                // Update physics body
+                                if (RobloxEnvironment.physicsBodyManager) {
+                                    RobloxEnvironment.physicsBodyManager.updateBody(targetObj);
+                                }
                                 break;
                             case 'CanCollide':
                                 targetObj.CanCollide = value === 'true' || value === true;
                                 updateCollisionVisualFeedback(targetObj);
+                                // Update physics body collision filters
+                                if (RobloxEnvironment.physicsBodyManager) {
+                                    RobloxEnvironment.physicsBodyManager.updateBody(targetObj);
+                                }
                                 break;
                             case 'Parent':
                                 if (value === 'workspace') {
@@ -3388,9 +5058,9 @@ function executeLuaActions(actions) {
                         const connection = {
                             object: eventObj,
                             eventName: action.eventName,
-                            callback: function(...args) {
+                            callback: async function(...args) {
                                 // Execute the function body
-                                executeFunctionBody(action.functionLines, action.params, args);
+                                await executeFunctionBody(action.functionLines, action.params, args);
                             }
                         };
 
@@ -3416,17 +5086,17 @@ function executeLuaActions(actions) {
                             if (eventObj instanceof GuiObject && eventObj.element) {
                                 if (eventObj.MouseButton1Click && eventObj.MouseButton1Click.Connect) {
                                     // Use the object's Connect method (for TextButton)
-                                    eventObj.MouseButton1Click.Connect(() => {
+                                    eventObj.MouseButton1Click.Connect(async () => {
                                         addOutput(`MouseButton1Click triggered for ${action.varName}`, 'success');
                                         // Execute the function body
-                                        executeFunctionBody(action.functionLines, action.params, []);
+                                        await executeFunctionBody(action.functionLines, action.params, []);
                                     });
                                 } else {
                                     // Fallback to direct event listener for other GUI objects
-                                    eventObj.element.addEventListener('click', () => {
+                                    eventObj.element.addEventListener('click', async () => {
                                         addOutput(`MouseButton1Click triggered for ${action.varName}`, 'success');
                                         // Execute the function body
-                                        executeFunctionBody(action.functionLines, action.params, []);
+                                        await executeFunctionBody(action.functionLines, action.params, []);
                                     });
                                 }
                                 addOutput(`Connected ${action.varName}.MouseButton1Click event`, 'success');
@@ -3478,7 +5148,7 @@ function executeLuaActions(actions) {
                         }
                     } else if (functions[action.varName]) {
                         // Call user-defined function
-                        executeFunctionBody(functions[action.varName], '', []);
+                        await executeFunctionBody(functions[action.varName], '', []);
                         addOutput(`Called function: ${action.varName}`, 'success');
                     } else {
                         // Check if it's a script object in the workspace
@@ -3487,7 +5157,7 @@ function executeLuaActions(actions) {
                             // Execute the script's source code
                             try {
                                 const scriptActions = interpretLuaScript(scriptObj.Source);
-                                executeLuaActions(scriptActions);
+                                await executeLuaActions(scriptActions);
                                 addOutput(`Executed script: ${action.varName}`, 'success');
                             } catch (error) {
                                 addOutput(`Error executing script ${action.varName}: ${error.message}`, 'error');
@@ -3503,13 +5173,48 @@ function executeLuaActions(actions) {
                     addOutput(`Set variable ${action.varName} = ${action.value}`, 'success');
                     break;
 
+                case 'wait':
+                    // Handle wait() function
+                    const waitTime = (parseFloat(action.seconds) || 0.03) * 1000;
+                    addOutput(`Waiting ${action.seconds} seconds...`, 'info');
+                    // Use a promise-based wait
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
+                    addOutput('Wait complete', 'info');
+                    break;
+
                 case 'while_loop':
-                    // Handle while loops - for now just execute once for "while true do"
-                    if (action.condition === 'true') {
-                        addOutput('Starting infinite loop (while true do)', 'success');
-                        // Execute the loop body once for now
-                        executeFunctionBody(action.loopLines, '', []);
-                    }
+                    // Handle while loops with proper iteration and delay to prevent blocking
+                    let iterations = 0;
+                    const maxIterations = 100000; // Allow more iterations for long-running loops
+                    
+                    const executeLoopWithDelay = async () => {
+                        while (iterations < maxIterations) {
+                            // Evaluate condition
+                            const conditionValue = action.condition === 'true' || 
+                                variables && variables[action.condition];
+                            
+                            if (conditionValue || action.condition === 'true') {
+                                addOutput(`While loop iteration ${iterations + 1}`, 'info');
+                                
+                                // Execute the loop body
+                                executeFunctionBody(action.loopLines, '', []);
+                                iterations++;
+                                
+                                // Check if we hit max iterations
+                                if (iterations >= maxIterations) {
+                                    addOutput('While loop reached maximum iterations, stopping to prevent infinite loop', 'warning');
+                                    break;
+                                }
+                                
+                                // Small delay to allow browser to render
+                                await new Promise(r => setTimeout(r, 0));
+                            } else {
+                                break;
+                            }
+                        }
+                    };
+                    
+                    executeLoopWithDelay();
                     break;
 
                 case 'print':
@@ -3519,13 +5224,13 @@ function executeLuaActions(actions) {
         } catch (error) {
             addOutput(`Error executing action: ${error.message}`, 'error');
         }
-    });
+    }
 }
 
-function executeFunctionBody(functionLines, paramString, args) {
+async function executeFunctionBody(functionLines, paramString, args) {
     // Simple function execution - for now just execute the lines
     const functionActions = interpretLuaScript(functionLines.join('\n'));
-    executeLuaActions(functionActions);
+    await executeLuaActions(functionActions);
 }
 
 function openScriptTab(scriptObj) {
@@ -3533,14 +5238,23 @@ function openScriptTab(scriptObj) {
     const tabId = `script-tab-${scriptName}`;
     const tabData = `script-${scriptName}`;
 
+    console.log(`[DEBUG] openScriptTab called for: ${scriptName}, ClassName: ${scriptObj.ClassName}`);
+
     // Check if tab already exists
     if (document.getElementById(tabId)) {
+        console.log(`[DEBUG] Tab already exists for ${scriptName}, switching to it`);
         switchTab(tabData);
         return;
     }
 
+    console.log(`[DEBUG] Creating new tab for ${scriptName}`);
+
     // Create new tab
     const tabsContainer = document.getElementById('studio-tabs');
+    if (!tabsContainer) {
+        console.error(`[DEBUG] studio-tabs container not found!`);
+        return;
+    }
     const newTab = document.createElement('div');
     newTab.className = 'tab';
     newTab.setAttribute('data-tab', tabData);
@@ -3559,9 +5273,14 @@ function openScriptTab(scriptObj) {
     newTab.appendChild(closeBtn);
 
     tabsContainer.appendChild(newTab);
+    console.log(`[DEBUG] Tab added to studio-tabs`);
 
     // Create script editor content
     const contentContainer = document.querySelector('.studio-content');
+    if (!contentContainer) {
+        console.error(`[DEBUG] studio-content container not found!`);
+        return;
+    }
     const scriptEditor = document.createElement('div');
     scriptEditor.className = 'code-editor';
     scriptEditor.id = tabId;
@@ -3572,6 +5291,7 @@ function openScriptTab(scriptObj) {
 
     scriptEditor.appendChild(editorContainer);
     contentContainer.appendChild(scriptEditor);
+    console.log(`[DEBUG] Script editor added to studio-content with id: ${tabId}`);
 
     // Initialize Monaco Editor for script tabs
     (function() {
@@ -3658,33 +5378,135 @@ function openScriptTab(scriptObj) {
                     scriptObj.Source = monacoEditor.getValue();
                 });
 
+                // Register autocomplete provider for Lua
+                monaco.languages.registerCompletionItemProvider('lua', {
+                    provideCompletionItems: function(model, position) {
+                        const suggestions = [
+                            // Lua keywords
+                            { label: 'local', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'function', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'end', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'if', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'then', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'else', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'elseif', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'for', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'while', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'do', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'repeat', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'until', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'return', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'break', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'in', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'and', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'or', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'not', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'true', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'false', kind: monaco.languages.CompletionItemKind.Keyword },
+                            { label: 'nil', kind: monaco.languages.CompletionItemKind.Keyword },
+
+                            // Roblox API functions
+                            { label: 'Instance.new', kind: monaco.languages.CompletionItemKind.Function, insertText: 'Instance.new("${1:Part}")' },
+                            { label: 'Vector3.new', kind: monaco.languages.CompletionItemKind.Function, insertText: 'Vector3.new(${1:0}, ${2:0}, ${3:0})' },
+                            { label: 'Color3.new', kind: monaco.languages.CompletionItemKind.Function, insertText: 'Color3.new(${1:0}, ${2:0}, ${3:0})' },
+                            { label: 'CFrame.new', kind: monaco.languages.CompletionItemKind.Function, insertText: 'CFrame.new(${1:0}, ${2:0}, ${3:0})' },
+                            { label: 'print', kind: monaco.languages.CompletionItemKind.Function, insertText: 'print(${1:"Hello World"})' },
+                            { label: 'wait', kind: monaco.languages.CompletionItemKind.Function, insertText: 'wait(${1:1})' },
+                            { label: 'spawn', kind: monaco.languages.CompletionItemKind.Function, insertText: 'spawn(function()\n\t${1:-- code here}\nend)' },
+                            { label: 'delay', kind: monaco.languages.CompletionItemKind.Function, insertText: 'delay(${1:1}, function()\n\t${2:-- code here}\nend)' },
+
+                            // Roblox services and globals
+                            { label: 'workspace', kind: monaco.languages.CompletionItemKind.Variable },
+                            { label: 'game', kind: monaco.languages.CompletionItemKind.Variable },
+                            { label: 'script', kind: monaco.languages.CompletionItemKind.Variable },
+                            { label: 'game.Workspace', kind: monaco.languages.CompletionItemKind.Variable },
+                            { label: 'game.Players', kind: monaco.languages.CompletionItemKind.Variable },
+                            { label: 'game.Lighting', kind: monaco.languages.CompletionItemKind.Variable },
+                            { label: 'game.ReplicatedStorage', kind: monaco.languages.CompletionItemKind.Variable },
+
+                            // Roblox classes
+                            { label: 'Part', kind: monaco.languages.CompletionItemKind.Class },
+                            { label: 'Model', kind: monaco.languages.CompletionItemKind.Class },
+                            { label: 'Script', kind: monaco.languages.CompletionItemKind.Class },
+                            { label: 'PointLight', kind: monaco.languages.CompletionItemKind.Class },
+                            { label: 'Sound', kind: monaco.languages.CompletionItemKind.Class },
+                            { label: 'Humanoid', kind: monaco.languages.CompletionItemKind.Class },
+                            { label: 'Player', kind: monaco.languages.CompletionItemKind.Class },
+
+                            // Common properties
+                            { label: 'Position', kind: monaco.languages.CompletionItemKind.Property },
+                            { label: 'Size', kind: monaco.languages.CompletionItemKind.Property },
+                            { label: 'Color', kind: monaco.languages.CompletionItemKind.Property },
+                            { label: 'Transparency', kind: monaco.languages.CompletionItemKind.Property },
+                            { label: 'Anchored', kind: monaco.languages.CompletionItemKind.Property },
+                            { label: 'CanCollide', kind: monaco.languages.CompletionItemKind.Property },
+                            { label: 'Parent', kind: monaco.languages.CompletionItemKind.Property },
+                            { label: 'Name', kind: monaco.languages.CompletionItemKind.Property },
+
+                            // Events
+                            { label: 'Touched', kind: monaco.languages.CompletionItemKind.Event },
+                            { label: 'TouchEnded', kind: monaco.languages.CompletionItemKind.Event },
+                            { label: 'Changed', kind: monaco.languages.CompletionItemKind.Event },
+                            { label: 'ChildAdded', kind: monaco.languages.CompletionItemKind.Event },
+                            { label: 'ChildRemoved', kind: monaco.languages.CompletionItemKind.Event },
+
+                            // Current workspace objects
+                            ...Object.keys(luaObjects).map(name => ({
+                                label: name,
+                                kind: monaco.languages.CompletionItemKind.Variable,
+                                detail: luaObjects[name].ClassName || 'Object'
+                            }))
+                        ];
+
+                        return { suggestions };
+                    }
+                });
+
                 // Store reference
                 scriptEditor.monacoEditor = monacoEditor;
 
-                console.log(`Monaco Editor initialized for script: ${scriptObj.Name}`);
+                console.log(`[DEBUG] Monaco Editor initialized for script: ${scriptObj.Name}`);
             });
         };
         document.head.appendChild(script);
     })();
 
     // Switch to the new tab
+    console.log(`[DEBUG] Switching to new tab: ${tabData}`);
     switchTab(tabData);
 }
 
 function closeScriptTab(scriptName) {
+    console.log(`[DEBUG] closeScriptTab called for: ${scriptName}`);
     const tabData = `script-${scriptName}`;
     const tabId = `script-tab-${scriptName}`;
 
     // Remove tab
     const tab = document.querySelector(`[data-tab="${tabData}"]`);
-    if (tab) tab.remove();
+    if (tab) {
+        console.log(`[DEBUG] Removing tab element for ${scriptName}`);
+        tab.remove();
+    } else {
+        console.log(`[DEBUG] Tab element not found for ${scriptName}`);
+    }
 
     // Remove content
     const content = document.getElementById(tabId);
-    if (content) content.remove();
+    if (content) {
+        console.log(`[DEBUG] Removing content element for ${scriptName}`);
+        // Dispose Monaco editor if it exists
+        if (content.monacoEditor) {
+            console.log(`[DEBUG] Disposing Monaco editor for ${scriptName}`);
+            content.monacoEditor.dispose();
+        }
+        content.remove();
+    } else {
+        console.log(`[DEBUG] Content element not found for ${scriptName}`);
+    }
 
     // Switch back to viewport if this was the active tab
     if (currentTab === tabData) {
+        console.log(`[DEBUG] Switching back to viewport from ${scriptName} tab`);
         switchTab('viewport');
     }
 }
@@ -3736,13 +5558,8 @@ function runScriptWithErrorHandling(scriptName = null) {
             return;
         }
     } else {
-        // For main script editor
-        if (window.monacoEditor) {
-            script = window.monacoEditor.getValue().trim();
-        } else {
-            addOutput('Error: No script to run!', 'error');
-            return;
-        }
+        addOutput('Error: No script to run!', 'error');
+        return;
     }
 
     if (!script) {
@@ -4195,10 +6012,8 @@ function initializeMainScriptEditor() {
 }
 
 function clearMainScript() {
-    if (window.monacoEditor) {
-        window.monacoEditor.setValue('-- Script code here\n-- Write your Lua code below\n\nprint(\'Hello World!\')');
-        clearOutput();
-    }
+    // Main script editor has been removed
+    clearOutput();
 }
 
 function loadScriptIntoEditor(scriptObj) {
@@ -4592,8 +6407,186 @@ class ScreenGui extends GuiObject {
         this.element.style.border = 'none';
     }
 }
-
 window.ScreenGui = ScreenGui;
+
+// Settings functions
+function openSettings() {
+    const modal = document.getElementById('settings-modal');
+    if (modal) {
+        // Load current settings
+        const settings = JSON.parse(localStorage.getItem('rogold_studio_settings') || '{}');
+        const gearsAllowedToggle = document.getElementById('gears-allowed-toggle');
+        if (gearsAllowedToggle) {
+            gearsAllowedToggle.checked = settings.gearsAllowed !== false; // Default to true
+        }
+
+        // Load current thumbnail if editing existing game
+        const urlParams = new URLSearchParams(window.location.search);
+        const gameId = urlParams.get('game');
+        if (gameId) {
+            fetch(`/api/games/${gameId}`)
+                .then(response => response.json())
+                .then(gameData => {
+                    const thumbnailPreview = document.getElementById('thumbnail-preview');
+                    if (thumbnailPreview && gameData.thumbnail) {
+                        thumbnailPreview.innerHTML = `<img src="${gameData.thumbnail}" style="max-width: 100%; max-height: 100%;">`;
+                    }
+                })
+                .catch(error => console.error('Error loading game thumbnail:', error));
+        }
+
+        // Setup thumbnail preview
+        const thumbnailInput = document.getElementById('thumbnail-input');
+        if (thumbnailInput) {
+            thumbnailInput.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const thumbnailPreview = document.getElementById('thumbnail-preview');
+                        if (thumbnailPreview) {
+                            thumbnailPreview.innerHTML = `<img src="${e.target.result}" style="max-width: 100%; max-height: 100%;">`;
+                        }
+                    };
+                    reader.readAsDataURL(file);
+                }
+            });
+        }
+
+        modal.style.display = 'block';
+    }
+}
+
+function closeSettings() {
+    const modal = document.getElementById('settings-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+async function saveSettings() {
+    const gearsAllowedToggle = document.getElementById('gears-allowed-toggle');
+    const thumbnailInput = document.getElementById('thumbnail-input');
+
+    if (gearsAllowedToggle) {
+        const settings = {
+            gearsAllowed: gearsAllowedToggle.checked
+        };
+        localStorage.setItem('rogold_studio_settings', JSON.stringify(settings));
+    }
+
+    // Handle thumbnail change if editing existing game
+    const urlParams = new URLSearchParams(window.location.search);
+    const gameId = urlParams.get('game');
+    if (gameId && thumbnailInput && thumbnailInput.files[0]) {
+        try {
+            const file = thumbnailInput.files[0];
+            const reader = new FileReader();
+            const thumbnailData = await new Promise((resolve) => {
+                reader.onload = (e) => resolve(e.target.result);
+                reader.readAsDataURL(file);
+            });
+
+            // Update game with new thumbnail
+            const response = await fetch('/api/games', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    gameId: gameId,
+                    thumbnail: thumbnailData
+                })
+            });
+
+            if (response.ok) {
+                addOutput('Thumbnail updated successfully!', 'success');
+            } else {
+                addOutput('Failed to update thumbnail', 'error');
+            }
+        } catch (error) {
+            addOutput('Error updating thumbnail: ' + error.message, 'error');
+        }
+    }
+
+    addOutput('Settings saved!', 'success');
+    closeSettings();
+}
+
+async function saveAllAlterations() {
+    try {
+        // Get current game ID from URL if editing existing game
+        const urlParams = new URLSearchParams(window.location.search);
+        const gameId = urlParams.get('game');
+
+        const gameData = serializeGameState();
+        const currentUser = localStorage.getItem('rogold_currentUser');
+
+        if (!currentUser) {
+            addOutput('You must be logged in to save alterations!', 'error');
+            return;
+        }
+
+        if (gameId) {
+            // Update existing game on server (using POST since PUT might not be available)
+            showPublishProgress('Saving alterations to server...');
+
+            // Fetch existing game to get title and other metadata
+            const existingGameResponse = await fetch(`/api/games/${gameId}`);
+            if (!existingGameResponse.ok) {
+                throw new Error('Failed to fetch existing game data');
+            }
+            const existingGame = await existingGameResponse.json();
+
+            const response = await fetch('/api/games', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    ...gameData,
+                    title: existingGame.title, // Use existing title
+                    thumbnail: existingGame.thumbnail, // Preserve existing thumbnail
+                    gameId: gameId, // Override the generated ID with existing one
+                    creator_id: currentUser,
+                    updatedAt: new Date().toISOString()
+                })
+            });
+
+            hidePublishProgress();
+
+            if (response.ok) {
+                addOutput('All alterations saved to server successfully!', 'success');
+            } else {
+                const error = await response.text();
+                addOutput(`Failed to save alterations: ${error}`, 'error');
+            }
+        } else {
+            // Save as local project file
+            const blob = new Blob([JSON.stringify(gameData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `rogold_alterations_${Date.now()}.json`;
+            a.click();
+
+            URL.revokeObjectURL(url);
+            addOutput('All alterations saved as local file!', 'success');
+        }
+    } catch (error) {
+        hidePublishProgress();
+        addOutput(`Error saving alterations: ${error.message}`, 'error');
+        console.error('Save alterations error:', error);
+    }
+}
+
+// Expose to global scope
+window.openSettings = openSettings;
+window.closeSettings = closeSettings;
+window.saveSettings = saveSettings;
+window.saveAllAlterations = saveAllAlterations;
+
 
 
 

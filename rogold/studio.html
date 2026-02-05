@@ -157,6 +157,8 @@
             padding-left: 12px;
         }
 
+        /* Removed object type prefixes from workspace tree */
+        /*
         .workspace-object.part::before {
             content: "Part ";
         }
@@ -176,6 +178,11 @@
         .workspace-object.script::before {
             content: "Script ";
         }
+
+        .workspace-object.folder::before {
+            content: "📁 ";
+        }
+        */
 
         .studio-main {
             flex: 1;
@@ -274,8 +281,6 @@
         }
 
         .viewport-canvas {
-            width: 100% !important;
-            height: 100% !important;
             display: block;
         }
 
@@ -300,13 +305,13 @@
         <div class="studio-header">
             <div class="studio-title">RoGold Studio</div>
             <div class="studio-toolbar">
-                <button class="studio-btn" id="play-btn">Play</button>
-                <button class="studio-btn" id="stop-btn">Stop</button>
+                <button class="studio-btn" id="test-physics-btn">Test Physics</button>
                 <button class="studio-btn" id="delete-btn">Delete</button>
                 <button class="studio-btn" id="test-btn">Test</button>
                 <button class="studio-btn" id="publish-btn">Publish</button>
                 <button class="studio-btn" id="save-btn">Save</button>
                 <button class="studio-btn" id="load-btn">Load</button>
+                <button class="studio-btn" id="settings-btn">Settings</button>
                 <button class="studio-btn" id="back-btn">Back to Game</button>
             </div>
         </div>
@@ -327,6 +332,7 @@
                     <div class="toolbox-item" data-type="light">Light</div>
                     <div class="toolbox-item" data-type="model">Model</div>
                     <div class="toolbox-item" data-type="script">Script</div>
+                    <div class="toolbox-item" data-type="folder">Folder</div>
                     <div style="color: #cccccc; font-size: 10px; margin-top: 4px; font-family: Tahoma, sans-serif;">
                         <b>Keyboard:</b> Q=Select W=Move R=Rotate E=Scale T=Part<br>
                         Select: Click parts to select<br>
@@ -342,7 +348,7 @@
                     <div class="sidebar-title">Explorer</div>
                     <div id="workspace-tree">
                         <div class="workspace-item workspace-folder" data-path="Workspace" data-expanded="true">
-                            Workspace
+                            <span class="expand-arrow" style="cursor: pointer; margin-right: 4px;">▼</span>Workspace
                             <div class="workspace-children" id="workspace-children">
                                 <!-- Objects will be added here dynamically -->
                             </div>
@@ -355,8 +361,18 @@
                     <div class="sidebar-title">Properties</div>
                     <div id="properties-content" style="font-family: Tahoma, sans-serif; font-size: 11px;">
                         <div style="margin-bottom: 4px;">
+                            <label>Class:</label>
+                            <input type="text" id="prop-class" readonly style="width: 100px; background: #f0f0f0;">
+                        </div>
+                        <div style="margin-bottom: 4px;">
                             <label>Name:</label>
                             <input type="text" id="prop-name" style="width: 100px;">
+                        </div>
+                        <div style="margin-bottom: 4px;">
+                            <label>Parent:</label>
+                            <select id="prop-parent" style="width: 100px;">
+                                <option value="Workspace">Workspace</option>
+                            </select>
                         </div>
                         <div style="margin-bottom: 4px;">
                             <label>Position:</label><br>
@@ -392,6 +408,55 @@
                             <label>Restitution:</label>
                             <input type="number" id="prop-restitution" step="0.01" min="0" max="1" style="width: 60px;">
                         </div>
+                        <div style="margin-bottom: 4px;">
+                            <label>Transparency:</label>
+                            <input type="number" id="prop-transparency" step="0.01" min="0" max="1" style="width: 60px;">
+                        </div>
+                        <!-- GUI-specific properties (hidden by default, shown for GUI objects) -->
+                        <div style="margin-bottom: 4px; display: none;" id="prop-bg-transparency-container">
+                            <label>Background Transparency:</label>
+                            <input type="number" id="prop-background-transparency" step="0.01" min="0" max="1" style="width: 60px;">
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-text-transparency-container">
+                            <label>Text Transparency:</label>
+                            <input type="number" id="prop-text-transparency" step="0.01" min="0" max="1" style="width: 60px;">
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-text-color-container">
+                            <label>Text Color:</label>
+                            <input type="color" id="prop-text-color-picker" style="width: 40px; height: 24px; vertical-align: middle; cursor: pointer;" title="Click to pick text color">
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-text-size-container">
+                            <label>Font Size:</label>
+                            <input type="number" id="prop-text-size" min="8" max="72" style="width: 60px;">
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-size-2d-container">
+                            <label>Size:</label><br>
+                            Width: <input type="number" id="prop-size-width" style="width: 50px;">
+                            Height: <input type="number" id="prop-size-height" style="width: 50px;">
+                        </div>
+                        <div style="margin-bottom: 4px;">
+                            <label>Color:</label>
+                            <input type="color" id="prop-color-picker" style="width: 40px; height: 24px; vertical-align: middle; cursor: pointer;" title="Click to pick color">
+                            <span style="font-size: 10px; color: #666;">RGB:</span>
+                            R:<input type="number" id="prop-color-r" step="0.01" min="0" max="1" style="width: 45px;" title="Red (0-1)">
+                            G:<input type="number" id="prop-color-g" step="0.01" min="0" max="1" style="width: 45px;" title="Green (0-1)">
+                            B:<input type="number" id="prop-color-b" step="0.01" min="0" max="1" style="width: 45px;" title="Blue (0-1)">
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-sound-id-container">
+                            <label>Sound URL:</label>
+                            <input type="text" id="prop-sound-id" placeholder="https://example.com/sound.mp3" style="width: 100%;">
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-sound-volume-container">
+                            <label>Volume:</label>
+                            <input type="number" id="prop-sound-volume" step="0.1" min="0" max="1" value="0.5" style="width: 60px;">
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-sound-looping-container">
+                            <input type="checkbox" id="prop-sound-looping">
+                            <label for="prop-sound-looping">Looping</label>
+                        </div>
+                        <div style="margin-bottom: 4px; display: none;" id="prop-sound-test-container">
+                            <button id="prop-sound-test" style="width: 100%;">Test Sound</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -401,7 +466,6 @@
                 <!-- Tabs -->
                 <div class="studio-tabs" id="studio-tabs">
                     <div class="tab active" data-tab="viewport">Viewport</div>
-                    <div class="tab" data-tab="script">Script</div>
                 </div>
 
                 <!-- Tab Content -->
@@ -409,13 +473,6 @@
                     <!-- 3D Viewport -->
                     <div class="viewport-3d" id="viewport-tab">
                         <canvas id="viewport-canvas"></canvas>
-                    </div>
-
-                    <!-- Script Editor -->
-                    <div class="code-editor" id="script-tab">
-                        <div class="code-editor-container" id="main-script-editor">
-                            <!-- Monaco Editor will be initialized here -->
-                        </div>
                     </div>
                 </div>
 
@@ -428,222 +485,9 @@
         </div>
     </div>
 
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script type="module" src="studio.js"></script>
     <script>
-        // Monaco Editor Integration
-        window.monacoEditor = null;
-
-        // Initialize Monaco Editor
-        (function() {
-            const script = document.createElement('script');
-            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js';
-            script.onload = function() {
-                require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
-                require(['vs/editor/editor.main'], function() {
-                    // Register Lua language
-                    monaco.languages.register({ id: 'lua' });
-
-                    // Define Lua language syntax
-                    monaco.languages.setMonarchTokensProvider('lua', {
-                        tokenizer: {
-                            root: [
-                                // Comments
-                                [/--.*$/, 'comment'],
-
-                                // Strings
-                                [/"([^"\\]|\\.)*$/, 'string.invalid'],
-                                [/"([^"\\]|\\.)*"/, 'string'],
-                                [/'([^'\\]|\\.)*$/, 'string.invalid'],
-                                [/'([^'\\]|\\.)*'/, 'string'],
-
-                                // Numbers
-                                [/\d*\.\d+([eE][\-+]?\d+)?/, 'number.float'],
-                                [/\d+/, 'number'],
-
-                                // Keywords
-                                [/\b(local|function|end|if|then|else|elseif|for|while|do|repeat|until|return|break|in|and|or|not|true|false|nil)\b/, 'keyword'],
-
-                                // Roblox API
-                                [/\b(Instance|new|Vector3|Color3|CFrame|workspace|game|script|print|wait|spawn|delay|tick|time|os|math|string|table)\b/, 'keyword.control'],
-
-                                // Operators
-                                [/[\+\-\*\/%=<>!]=?/, 'operator'],
-
-                                // Brackets
-                                [/[{}()\[\]]/, 'delimiter']
-                            ]
-                        }
-                    });
-
-                    // Create Monaco Editor
-                    window.monacoEditor = monaco.editor.create(document.getElementById('main-script-editor'), {
-                        value: `-- Welcome to RoGold Studio Script Editor!
--- Write your Lua code here
-
-print("Hello from RoGold Studio!")
-
--- Example: Create a simple GUI with Frame, TextLabel, and TextButton
-
--- Create a ScreenGui to hold our GUI elements
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "ExampleGUI"
-screenGui.Parent = game.Players.LocalPlayer.PlayerGui
-
--- Create a Frame as the main container
-local frame = Instance.new("Frame")
-frame.Name = "MainFrame"
-frame.Size = UDim2.new(0, 300, 0, 200)
-frame.Position = UDim2.new(0.5, -150, 0.5, -100)
-frame.BackgroundColor3 = Color3.new(0.2, 0.2, 0.2)
-frame.BackgroundTransparency = 0.1
-frame.BorderSizePixel = 2
-frame.Parent = screenGui
-
--- Create a TextLabel to display text
-local textLabel = Instance.new("TextLabel")
-textLabel.Name = "TitleLabel"
-textLabel.Size = UDim2.new(1, -20, 0, 50)
-textLabel.Position = UDim2.new(0, 10, 0, 10)
-textLabel.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-textLabel.Text = "Welcome to RoGold Studio!"
-textLabel.TextColor3 = Color3.new(0, 0, 0)
-textLabel.TextSize = 18
-textLabel.Font = Enum.Font.SourceSansBold
-textLabel.Parent = frame
-
--- Create a TextButton that can be clicked
-local textButton = Instance.new("TextButton")
-textButton.Name = "ClickButton"
-textButton.Size = UDim2.new(0, 150, 0, 40)
-textButton.Position = UDim2.new(0.5, -75, 1, -60)
-textButton.BackgroundColor3 = Color3.new(0.4, 0.6, 1)
-textButton.Text = "Click Me!"
-textButton.TextColor3 = Color3.new(1, 1, 1)
-textButton.TextSize = 16
-textButton.Font = Enum.Font.SourceSans
-textButton.Parent = frame
-
--- Connect an event to the button
-textButton.MouseButton1Click:Connect(function()
-   print("Button was clicked!")
-   textLabel.Text = "Button Clicked!"
-   textLabel.TextColor3 = Color3.new(0, 1, 0)
-   wait(2)
-   textLabel.Text = "Welcome to RoGold Studio!"
-   textLabel.TextColor3 = Color3.new(0, 0, 0)
-end)
-
-print("GUI created successfully!")
-`,
-                        language: 'lua',
-                        theme: 'vs-dark',
-                        fontSize: 12,
-                        minimap: { enabled: false },
-                        scrollBeyondLastLine: false,
-                        automaticLayout: true,
-                        wordWrap: 'on',
-                        tabSize: 4,
-                        insertSpaces: true,
-                        folding: true,
-                        lineNumbers: 'on',
-                        renderWhitespace: 'selection',
-                        bracketPairColorization: { enabled: true },
-                        contextmenu: true,
-                        mouseWheelZoom: true,
-                        smoothScrolling: true,
-                        cursorBlinking: 'blink',
-                        cursorSmoothCaretAnimation: true,
-                        renderLineHighlight: 'line',
-                        selectOnLineNumbers: true,
-                        roundedSelection: false,
-                        readOnly: false,
-                        glyphMargin: false,
-                        useTabStops: false,
-                        wordSeparators: '~!@#$%^&*()-=+[{]}\\|;:\'",.<>/?',
-                        wordWrapBreakBeforeCharacters: '([{',
-                        wordWrapBreakAfterCharacters: ')]}',
-                        autoClosingBrackets: 'always',
-                        autoClosingQuotes: 'always',
-                        autoSurround: 'languageDefined',
-                        autoIndent: 'advanced',
-                        formatOnPaste: true,
-                        formatOnType: true,
-                        acceptSuggestionOnCommitCharacter: true,
-                        acceptSuggestionOnEnter: 'on',
-                        accessibilitySupport: 'auto',
-                        codeLens: false,
-                        colorDecorators: true,
-                        lightbulb: { enabled: 'on' },
-                        quickSuggestions: {
-                            other: true,
-                            comments: true,
-                            strings: true
-                        },
-                        parameterHints: { enabled: true },
-                        suggestOnTriggerCharacters: true,
-                        acceptSuggestionOnEnter: 'on',
-                        tabCompletion: 'on',
-                        wordBasedSuggestions: true,
-                        suggest: {
-                            showKeywords: true,
-                            showSnippets: true,
-                            showModules: true,
-                            showVariables: true,
-                            showFunctions: true,
-                            showConstructors: true,
-                            showFields: true,
-                            showProperties: true,
-                            showMethods: true,
-                            showEvents: true,
-                            showOperators: true,
-                            showUnits: true,
-                            showValues: true,
-                            showConstants: true,
-                            showEnums: true,
-                            showEnumMembers: true,
-                            showClasses: true,
-                            showInterfaces: true,
-                            showStructs: true,
-                            showTypeParameters: true,
-                            showSnippets: true,
-                            showColors: true,
-                            showFiles: true,
-                            showReferences: true,
-                            showFolders: true,
-                            showTypeParameters: true,
-                            showIssues: true,
-                            showUsers: true,
-                            showSnippets: true,
-                            filterGraceful: true,
-                            localityBonus: true,
-                            shareSuggestSelections: true,
-                            showDeprecated: true,
-                            matchOnDescription: true,
-                            matchOnDetail: true,
-                            matchOnLabel: true,
-                            insertMode: 'insert',
-                            overwriteBefore: 3,
-                            overwriteAfter: 3,
-                            insertHighlight: true,
-                            preview: true,
-                            showInlineDetails: true,
-                            showStatusBar: true
-                        }
-                    });
-
-                    // Handle editor changes
-                    window.monacoEditor.onDidChangeModelContent(function() {
-                        // Update any connected script objects
-                        const value = window.monacoEditor.getValue();
-                        // This will be connected to the script execution system
-                    });
-
-                    console.log('Monaco Editor initialized successfully');
-                });
-            };
-            document.head.appendChild(script);
-        })();
-
         // Enhanced Code Editor Class (for backward compatibility)
         class RobloxCodeEditor {
             constructor(container, scriptObj = null) {
@@ -1143,5 +987,28 @@ print("GUI created successfully!")
         // Make it globally available
         window.RobloxCodeEditor = RobloxCodeEditor;
     </script>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #ece9d8; border: 2px outset #c0c0c0; padding: 20px;">
+            <h3 style="margin: 0 0 15px 0; color: #000;">Game Settings</h3>
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px;">
+                    <input type="checkbox" id="gears-allowed-toggle" style="margin-right: 8px;">
+                    Allow Gears in Game
+                </label>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px;">Change Thumbnail:</label>
+                <input type="file" id="thumbnail-input" accept="image/*" style="margin-bottom: 5px;">
+                <div id="thumbnail-preview" style="max-width: 100px; max-height: 100px; border: 1px solid #ccc;"></div>
+            </div>
+            <div style="text-align: right;">
+                <button class="studio-btn" onclick="saveAllAlterations()">Save All Alterations</button>
+                <button class="studio-btn" onclick="saveSettings()">Save Settings</button>
+                <button class="studio-btn" onclick="closeSettings()">Cancel</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

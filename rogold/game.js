@@ -1,18 +1,130 @@
+// this file interprets and runs the objects from the created objects in studio.js
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as CANNON from 'cannon-es';
+import { 
+    ENGINE_VERSION, 
+    MINIMUM_COMPATIBLE_VERSION,
+    createVersionInfo,
+    bustAssetUrl,
+    isVersionOlder,
+    applyLegacyDefaults,
+    applyVersionCompatibility,
+    logLegacyGameWarnings,
+    getCacheBustParam
+} from './version.js';
+
+// Ensure AudioContext is resumed before any THREE.Audio plays.
+// We monkey-patch THREE.Audio.prototype.play to attempt a resume first,
+// and also add a one-time user-gesture resume to reduce blocked plays.
+let __audioPlayPatched = false;
+function patchThreeAudioPlay() {
+    if (__audioPlayPatched) return;
+    __audioPlayPatched = true;
+    try {
+        const originalPlay = THREE.Audio.prototype.play;
+        THREE.Audio.prototype.play = function() {
+            try {
+                const ctx = this.context || (this.listener && this.listener.context);
+                if (ctx && ctx.state === 'suspended') {
+                    ctx.resume().then(() => {
+                        try { originalPlay.call(this); } catch (e) { console.warn('Audio play failed after resume', e); }
+                    }).catch(() => {
+                        // swallow
+                    });
+                    return;
+                }
+            } catch (err) {
+                // ignore
+            }
+            try { originalPlay.call(this); } catch (e) { console.warn('Audio play failed', e); }
+        };
+    } catch (err) {
+        console.warn('Failed to patch THREE.Audio.play', err);
+    }
+}
+
+// One-time user gesture handler to resume audio context as early as possible.
+let __audioGestureListenerAttached = false;
+function attachAudioGestureResume() {
+    if (__audioGestureListenerAttached) return;
+    __audioGestureListenerAttached = true;
+    const resume = () => {
+        try {
+            // Resume any existing AudioContexts in THREE.Audio/AudioListener
+            if (typeof THREE !== 'undefined') {
+                // Try to resume common contexts if present on existing listeners
+                document.querySelectorAll('*').forEach(() => {}); // no-op to avoid linter
+            }
+        } catch (e) {}
+        // Also try to resume any global audio listener if created later
+        try {
+            if (window && window.audioListener && window.audioListener.context && window.audioListener.context.state === 'suspended') {
+                window.audioListener.context.resume().catch(() => {});
+            }
+        } catch (e) {}
+        window.removeEventListener('pointerdown', resume);
+        window.removeEventListener('touchstart', resume);
+    };
+    window.addEventListener('pointerdown', resume, { once: true });
+    window.addEventListener('touchstart', resume, { once: true });
+}
+
+// Apply immediately
+patchThreeAudioPlay();
+attachAudioGestureResume();
+
+// Log engine version at startup
+console.log(`%c RoGold Engine v${ENGINE_VERSION} `, 'background: #1a1a2e; color: #00ff88; font-size: 14px; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
+console.log(`[VERSION] Engine initialized. Version: ${ENGINE_VERSION}, Minimum Compatible: ${MINIMUM_COMPATIBLE_VERSION}`);
+
+/**
+ * Load a GLTF/GLB model with automatic cache busting
+ * @param {string} url - The model URL
+ * @param {Function} onLoad - Callback when loaded
+ * @param {Function} onProgress - Optional progress callback
+ * @param {Function} onError - Optional error callback
+ */
+function loadModelWithCacheBust(url, onLoad, onProgress, onError) {
+    const loader = new GLTFLoader();
+    const cacheBustedUrl = bustAssetUrl(url);
+    console.log(`[ASSET] Loading model: ${cacheBustedUrl}`);
+    loader.load(cacheBustedUrl, onLoad, onProgress, onError);
+}
+
+/**
+ * Load a texture with automatic cache busting
+ * @param {string} url - The texture URL
+ * @param {Function} onLoad - Callback when loaded
+ * @param {Function} onProgress - Optional progress callback
+ * @param {Function} onError - Optional error callback
+ */
+function loadTextureWithCacheBust(url, onLoad, onProgress, onError) {
+    const loader = new THREE.TextureLoader();
+    const cacheBustedUrl = bustAssetUrl(url);
+    console.log(`[ASSET] Loading texture: ${cacheBustedUrl}`);
+    loader.load(cacheBustedUrl, onLoad, onProgress, onError);
+}
 
 let scene, camera, renderer, controls;
 let player, velocity, direction;
 let playerVelocity = new THREE.Vector3();
+let smoothedInputX = 0;
+let smoothedInputZ = 0;
 let moveForward = false;
 let moveBackward = false;
 let moveLeft = false;
 let moveRight = false;
 let canJump = false;
+let canJumpFromGround = false;
+let prevCanJumpFromGround = false;
+let hasJumpedThisCycle = false;
+let groundContactTimer = null;
 let isRespawning = false;
+let lastJumpTime = 0;
+const jumpCooldown = 200; // 200ms cooldown to prevent rapid successive jumps
 let fallenParts = [];
 let physicsWorld;
 const mouse = new THREE.Vector2();
@@ -20,14 +132,14 @@ const maxDistance = 10; // distância máxima do foguete
 const cooldownTime = 1000; // 1 segundo de cooldown
 
 // Roblox 2011-style physics constants
-const ROBLOX_GRAVITY = -196.2;      // Valor usado no Roblox por volta de 2010–2014
-const ROBLOX_FRICTION = 0.03;       // Balanced friction for good traction without being too sticky
-const ROBLOX_RESTITUTION = 0.05;    // Colisões duras, pouco quique
-const ROBLOX_LINEAR_DAMPING = 0.6;  // Increased damping for better traction and reduced slipperiness
-const ROBLOX_ANGULAR_DAMPING = 0.4; // Evita rotação eterna das partes
+const ROBLOX_GRAVITY = -196.2;      // Increased for faster gravity feel
+const ROBLOX_FRICTION = 0;       // Balanced friction for good traction without being too sticky
+const ROBLOX_RESTITUTION = 0;    // Colisões duras, pouco quique
+const ROBLOX_LINEAR_DAMPING = 0.1;  // Reduced damping for lighter feel
+const ROBLOX_ANGULAR_DAMPING = 0.1; // Reduced damping for lighter rotation
 
 // Increased jump impulse (higher = stronger jump)
-const JUMP_IMPULSE = 300; // Changed from 120 to 200 for higher jumps
+const JUMP_IMPULSE = 280; // Adjusted for better feel in 250-350 range
 
 let canShoot = true;
 let explosionSound;
@@ -40,23 +152,60 @@ let playerHealth = 100;
 const maxHealth = 100;
 let playerNameTags = {};
 
+// Part synchronization tracking
+let lastPartSync = {}; // partName -> last sync timestamp
+let lastPartState = {}; // partName -> {position: THREE.Vector3, rotation: THREE.Euler}
+
 // Face inventory system
-let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["OriginalGlitchedFace.webp"]');
+let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["imgs/OriginalGlitchedFace.webp"]');
+
+// Gear inventory system
+let ownedGears = JSON.parse(localStorage.getItem('rogold_owned_gears') || '[]');
+
+let backpackModal;
+let backpackToolBtn;
 
 let partMaterial;
 let luaObjects = {}; // Global luaObjects for the game environment
 let spinningParts = []; // Global list of spinning parts
 let isMenuOpen = false;
+let isConsoleOpen = false;
 let isDancing = false;
 
 // Roblox Environment for Lua scripts
 let RobloxEnvironment = {
     Workspace: {
-        Children: []
+        Children: [],
+        FindFirstChild: function(name) {
+            // First check if it's a direct property
+            if (this[name]) {
+                return this[name];
+            }
+            // Then check children by name
+            return this.Children.find(child => child.Name === name);
+        }
     },
     connections: [],
     wait: (seconds) => new Promise(resolve => setTimeout(resolve, seconds * 1000))
 };
+
+// Add dynamic property access to workspace for direct part access like workspace.part_1
+const originalWorkspace = RobloxEnvironment.Workspace;
+RobloxEnvironment.Workspace = new Proxy(originalWorkspace, {
+    get: function(target, property) {
+        // First check if it's a built-in property
+        if (property in target) {
+            return target[property];
+        }
+        // Otherwise, try to find a child with that name
+        return target.FindFirstChild(property);
+    },
+    set: function(target, property, value) {
+        // Allow setting properties directly
+        target[property] = value;
+        return true;
+    }
+});
 
 // Roblox Instance class for game environment
 class RobloxInstance {
@@ -78,6 +227,23 @@ class RobloxInstance {
         this.Color = new THREE.Color(0.5, 0.5, 0.5);
         this.Transparency = 0;
         this.spinAxis = new THREE.Vector3(0, 1, 0); // Default spin axis (Y)
+
+        // Return a proxy to enable script.ChildName access
+        return new Proxy(this, {
+            get(target, prop) {
+                // First check if it's a regular property
+                if (prop in target) {
+                    return target[prop];
+                }
+                // Then check if it's a child with that name
+                const child = target.Children.find(child => child.Name === prop);
+                if (child) {
+                    return child;
+                }
+                // Return undefined if not found
+                return undefined;
+            }
+        });
     }
 
     // Roblox-like methods
@@ -134,18 +300,43 @@ class RobloxInstance {
             
             // Apply Roblox-style collision response
             clone.cannonBody.addEventListener('collide', (e) => {
-                if (e.contact.getImpactVelocityAlongNormal() > 5) {
-                    // Classic Roblox collision response
-                    const bounceForce = e.contact.getImpactVelocityAlongNormal() * 0.5;
+                let impactVelocity = e.contact.getImpactVelocityAlongNormal();
+                console.log('Clone collision: impactVelocity =', impactVelocity);
+                if (isNaN(impactVelocity) || !isFinite(impactVelocity)) {
+                    console.warn('Clone collision: invalid impactVelocity, setting to 0');
+                    impactVelocity = 0;
+                }
+                impactVelocity = Math.max(0, Math.min(impactVelocity, 100)); // clamp to reasonable max
+                if (impactVelocity > 5) {
+                    let bounceForce = impactVelocity * 0.1;
+                    bounceForce = Math.max(0, Math.min(bounceForce, 10)); // clamp bounce force
                     const normal = e.contact.ni;
-                    clone.cannonBody.applyImpulse(
-                        new CANNON.Vec3(
-                            normal.x * bounceForce,
-                            normal.y * bounceForce,
-                            normal.z * bounceForce
-                        ),
-                        new CANNON.Vec3(0, 0, 0)
-                    );
+                    console.log('Clone collision: normal =', normal);
+                    if (normal && !isNaN(normal.x) && !isNaN(normal.y) && !isNaN(normal.z)) {
+                        const normalLength = Math.sqrt(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z);
+                        console.log('Clone collision: normalLength =', normalLength);
+                        if (normalLength > 0.001) {
+                            const nx = normal.x / normalLength;
+                            const ny = normal.y / normalLength;
+                            const nz = normal.z / normalLength;
+                            const impulseX = nx * bounceForce;
+                            const impulseY = ny * bounceForce;
+                            const impulseZ = nz * bounceForce;
+                            console.log('Clone collision: impulseX,Y,Z =', impulseX, impulseY, impulseZ);
+                            if (!isNaN(impulseX) && !isNaN(impulseY) && !isNaN(impulseZ)) {
+                                clone.cannonBody.applyImpulse(
+                                    new CANNON.Vec3(impulseX, impulseY, impulseZ),
+                                    new CANNON.Vec3(0, 0, 0)
+                                );
+                            } else {
+                                console.warn('Clone collision: skipping impulse due to NaN values');
+                            }
+                        } else {
+                            console.warn('Clone collision: skipping impulse due to small normal length');
+                        }
+                    } else {
+                        console.warn('Clone collision: skipping impulse due to invalid normal');
+                    }
                 }
             });
         }
@@ -300,7 +491,7 @@ function interpretLuaScript(script) {
 
         // Handle method calls
         if (line.includes(':')) {
-            const match = line.match(/(\w+):(\w+)\(([^)]*)\)/);
+            const match = line.match(/([.\w]+):(\w+)\(([^)]*)\)/);
             if (match) {
                 const varName = match[1];
                 const method = match[2];
@@ -344,9 +535,9 @@ function interpretLuaScript(script) {
             }
         }
 
-        // Handle variable assignments
-        if (line.includes('=') && !line.includes('local')) {
-            const match = line.match(/(\w+)\s*=\s*(.+)/);
+        // Handle variable assignments (including local)
+        if (line.includes('=')) {
+            const match = line.match(/(?:local\s+)?(\w+)\s*=\s*(.+)/);
             if (match) {
                 const varName = match[1];
                 const value = match[2];
@@ -396,24 +587,25 @@ function extractLoopBody(lines, startIndex) {
     const body = [];
     let braceCount = 0;
     let inLoop = false;
+    let startedBody = false;
 
     for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i];
 
-        if (line.includes('do')) {
-            inLoop = true;
+        if (line.includes('do') && !startedBody) {
+            // Found the 'do' keyword, start collecting body after this line
+            startedBody = true;
             braceCount++;
+            continue; // Skip the 'while ... do' line itself
         }
 
-        if (inLoop) {
+        if (startedBody) {
             body.push(line);
         }
 
-        if (line.includes('end')) {
-            braceCount--;
-            if (braceCount === 0) {
-                break;
-            }
+        if (line.trim() === 'end' && startedBody) {
+            // Found the end of the loop
+            break;
         }
     }
 
@@ -449,20 +641,21 @@ function countFunctionLines(lines, startIndex) {
 function countLoopLines(lines, startIndex) {
     let count = 0;
     let braceCount = 0;
+    let startedBody = false;
 
     for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i];
-        count++;
-
-        if (line.includes('do')) {
-            braceCount++;
+        
+        // Skip the 'while ... do' line itself
+        if (line.includes('do') && !startedBody) {
+            startedBody = true;
+            continue;
         }
 
-        if (line.includes('end')) {
-            braceCount--;
-            if (braceCount === 0) {
-                break;
-            }
+        count++;
+
+        if (line.trim() === 'end') {
+            break;
         }
     }
 
@@ -472,6 +665,7 @@ function countLoopLines(lines, startIndex) {
 // Replace the runScriptWithErrorHandling function with this async version:
 async function runScriptWithErrorHandling(scriptName = null, testScript = null) {
     let script;
+    let initialVariables = { workspace: RobloxEnvironment.Workspace, game: window.game };
 
     if (testScript) {
         script = testScript;
@@ -479,6 +673,8 @@ async function runScriptWithErrorHandling(scriptName = null, testScript = null) 
         const scriptObj = luaObjects[scriptName];
         if (scriptObj && scriptObj.ClassName === 'Script') {
             script = scriptObj.Source || '';
+            // Pass the script object as a 'script' variable for script.ChildName access
+            initialVariables.script = scriptObj;
         } else {
             addOutput(`Error: Script "${scriptName}" not found!`, 'error');
             return;
@@ -530,6 +726,101 @@ async function runScriptWithErrorHandling(scriptName = null, testScript = null) 
     }
 }
 
+function playSoundIfAllowed(soundObj) {
+    if (!soundObj) return;
+
+    // Create fresh HTML5 Audio element on user interaction
+    if (soundObj.soundUrl) {
+        console.log('Creating fresh HTML5 Audio for:', soundObj.soundUrl);
+        const audio = new Audio();
+        audio.src = soundObj.soundUrl;
+        audio.volume = soundObj.Volume || 0.5;
+        audio.loop = soundObj.Looping || false;
+        audio.preload = 'auto';
+
+        audio.play().then(() => {
+            console.log('Fresh HTML5 Audio played successfully');
+            soundObj.isPlaying = true;
+            soundObj.pendingPlay = false;
+            soundObj.html5Audio = audio; // Store for future use
+        }).catch(err => {
+            console.log('Fresh HTML5 Audio play failed, trying THREE.Audio:', err.message);
+            // Fallback to THREE.Audio
+            if (soundObj.audio && soundObj.audio.buffer) {
+                const ctx = soundObj.audio.context || (soundObj.audio.listener && soundObj.audio.listener.context) || (audioListener && audioListener.context);
+                if (ctx && ctx.state === 'suspended') {
+                    ctx.resume().then(() => {
+                        soundObj.audio.play();
+                        soundObj.isPlaying = true;
+                        soundObj.pendingPlay = false;
+                        console.log('THREE.Audio played successfully after resume');
+                    }).catch(err => {
+                        console.warn('THREE.Audio resume failed:', err);
+                        soundObj.pendingPlay = false;
+                    });
+                } else {
+                    soundObj.audio.play();
+                    soundObj.isPlaying = true;
+                    soundObj.pendingPlay = false;
+                    console.log('THREE.Audio played successfully');
+                }
+            } else {
+                console.log('No audio available to play');
+                soundObj.pendingPlay = false;
+            }
+        });
+    }
+    // Fallback to existing THREE.Audio if no URL
+    else if (soundObj.audio && soundObj.audio.buffer) {
+        console.log('Attempting to play existing THREE.Audio');
+        const ctx = soundObj.audio.context || (soundObj.audio.listener && soundObj.audio.listener.context) || (audioListener && audioListener.context);
+        soundObj.audio.setLoop(soundObj.Looping || false);
+        if (ctx && ctx.state === 'suspended') {
+            ctx.resume().then(() => {
+                soundObj.audio.play();
+                soundObj.isPlaying = true;
+                soundObj.pendingPlay = false;
+                console.log('THREE.Audio played successfully after resume, looping:', soundObj.Looping);
+            }).catch(err => {
+                console.warn('THREE.Audio resume failed:', err);
+                soundObj.pendingPlay = false;
+            });
+        } else {
+            soundObj.audio.play();
+            soundObj.isPlaying = true;
+            soundObj.pendingPlay = false;
+            console.log('THREE.Audio played successfully, looping:', soundObj.Looping);
+        }
+    } else {
+        console.log('Cannot play sound - no URL or audio loaded');
+        soundObj.pendingPlay = false;
+    }
+}
+
+function resolvePropertyAccess(propertyPath, variables = {}) {
+    const parts = propertyPath.split('.');
+    let current = null;
+
+    for (const part of parts) {
+        if (current === null) {
+            // First part - check variables, luaObjects, or global objects
+            current = variables[part] || luaObjects[part] || window[part];
+            if (!current && part === 'workspace') {
+                current = RobloxEnvironment.Workspace;
+            }
+        } else {
+            // Subsequent parts - access properties
+            current = current[part];
+        }
+
+        if (current === undefined) {
+            return null;
+        }
+    }
+
+    return current;
+}
+
 async function executeLuaActions(actions, initialVariables = {}) {
     const variables = { ...initialVariables };
     const functions = {};
@@ -544,44 +835,65 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     break;
 
                 case 'for_loop':
-                    for (let i = action.start; i <= action.end; i++) {
-                        // Set loop variable
-                        variables[action.loopVar] = i;
-                        // Execute loop body
-                        const loopActions = interpretLuaScript(action.body.join('\n'));
-                        executeLuaActions(loopActions);
-                    }
+                    // Execute for loop with delays between iterations to prevent blocking
+                    const executeForLoopWithDelay = async () => {
+                        for (let i = action.start; i <= action.end; i++) {
+                            // Set loop variable
+                            variables[action.loopVar] = i;
+                            
+                            // Execute loop body synchronously
+                            const loopActions = interpretLuaScript(action.body.join('\n'));
+                            executeLuaActions(loopActions, variables);
+                            
+                            // Small delay to allow browser to render
+                            await new Promise(r => setTimeout(r, 0));
+                        }
+                    };
+                    
+                    executeForLoopWithDelay();
                     break;
 
                 case 'while_loop':
                     let iterations = 0;
-                    const maxIterations = 1000; // Prevent infinite loops
-                    while (iterations < maxIterations) {
-                        // Evaluate condition (simple variable check for now)
-                        const conditionValue = variables[action.condition] || parseValue(action.condition);
-                        if (!conditionValue) break;
-
-                        // Execute loop body
-                        const loopActions = interpretLuaScript(action.body.join('\n'));
-                        executeLuaActions(loopActions);
-                        iterations++;
-                    }
-                    if (iterations >= maxIterations) {
-                        console.warn('While loop exceeded maximum iterations, breaking to prevent infinite loop');
-                    }
+                    const maxIterations = 100000; // Allow more iterations for long-running loops
+                    
+                    // Execute loop with delays between iterations to prevent blocking
+                    const executeLoopWithDelay = async () => {
+                        while (iterations < maxIterations) {
+                            // Evaluate condition
+                            const conditionValue = variables[action.condition] || parseValue(action.condition);
+                            if (action.condition !== 'true' && !conditionValue) {
+                                break;
+                            }
+                            
+                            // Execute loop body synchronously
+                            const loopActions = interpretLuaScript(action.body.join('\n'));
+                            executeLuaActions(loopActions, variables);
+                            iterations++;
+                            
+                            // Small delay to allow browser to render
+                            await new Promise(r => setTimeout(r, 0));
+                        }
+                    };
+                    
+                    executeLoopWithDelay();
                     break;
 
                 case 'create_instance':
                     const instance = new RobloxInstance(action.className, action.varName);
                     instance.isScriptCreated = true;
                     variables[action.varName] = instance;
+                    // Ensure script-created instances are also tracked in luaObjects
+                    // so they participate in the main update loop (physics/anchored/collision)
+                    luaObjects[action.varName] = instance;
 
                     // Create 3D representation for parts
                     if (action.className === 'Part') {
-                        const geometry = new THREE.BoxGeometry(4, 4, 4);
+                        const geometry = new THREE.BoxGeometry(1, 1, 1);
                         const material = new THREE.MeshLambertMaterial({ color: 0xff6600 });
                         const part = new THREE.Mesh(geometry, material);
                         part.position.set(0, 5, 0); // Default position
+                        part.scale.set(4, 4, 4); // Default size
                         part.castShadow = true;
                         part.receiveShadow = true;
                         scene.add(part);
@@ -592,40 +904,107 @@ async function executeLuaActions(actions, initialVariables = {}) {
 
                         // Add physics body
                         if (physicsWorld) {
-                            const shape = new CANNON.Box(new CANNON.Vec3(2, 2, 2));
+                            const shape = new CANNON.Box(new CANNON.Vec3(
+                                instance.Size.x / 2,
+                                instance.Size.y / 2,
+                                instance.Size.z / 2
+                            ));
                             const body = new CANNON.Body({
                                 mass: instance.Anchored ? 0 : 1,
                                 type: instance.Anchored ? CANNON.Body.STATIC : CANNON.Body.DYNAMIC,
                                 position: new CANNON.Vec3(0, 5, 0),
                                 shape: shape,
-                                material: partMaterial
+                                material: partMaterial,
+                                linearDamping: ROBLOX_LINEAR_DAMPING,
+                                angularDamping: ROBLOX_ANGULAR_DAMPING
                             });
                             body.userData = { mesh: part, instance: instance };
 
                             // Add collision event listener
+                            // Throttle impulses to avoid repeated application while contact persists
+                            instance._lastCollisionTime = instance._lastCollisionTime || 0;
                             body.addEventListener('collide', (e) => {
+                                const now = Date.now();
+                                // short cooldown (ms) to prevent multiple impulses during continuous contact
+                                if (now - (instance._lastCollisionTime || 0) < 50) return;
+                                instance._lastCollisionTime = now;
+
                                 const otherBody = e.body;
                                 const contact = e.contact;
+
+                                // Skip impulse if this instance shouldn't collide or is anchored
+                                if (!instance.CanCollide || instance.Anchored) return;
 
                                 // Trigger Touched event if the instance has a Touched connection
                                 if (instance.touched && typeof instance.touched === 'function') {
                                     instance.touched(otherBody.userData?.instance || otherBody);
                                 }
 
-                                // Apply Roblox-style collision response
-                                if (contact.getImpactVelocityAlongNormal() > 5) {
-                                    const bounceForce = contact.getImpactVelocityAlongNormal() * 0.5;
-                                    const normal = contact.ni;
-                                    body.applyImpulse(
-                                        new CANNON.Vec3(
-                                            normal.x * bounceForce,
-                                            normal.y * bounceForce,
-                                            normal.z * bounceForce
-                                        ),
-                                        new CANNON.Vec3(0, 0, 0)
-                                    );
+                                // Apply Roblox-style collision response once per collision event
+                                try {
+                                    if (!contact || typeof contact.getImpactVelocityAlongNormal !== 'function') return;
+                                    let impactVelocity = contact.getImpactVelocityAlongNormal();
+                                    if (isNaN(impactVelocity) || !isFinite(impactVelocity)) {
+                                        impactVelocity = 0;
+                                    }
+                                    impactVelocity = Math.max(0, Math.min(impactVelocity, 100)); // clamp to reasonable max
+                                    if (impactVelocity > 2) {
+                                        // Reduce multiplier to avoid huge impulses and cap to a small max
+                                        let bounceForce = impactVelocity * 0.03;
+                                        bounceForce = Math.max(0, Math.min(bounceForce, 2)); // much smaller cap
+                                        const normal = contact.ni;
+                                        if (normal && !isNaN(normal.x) && !isNaN(normal.y) && !isNaN(normal.z)) {
+                                            const normalLength = Math.sqrt(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z);
+                                            if (normalLength > 0.001) {
+                                                const nx = normal.x / normalLength;
+                                                const ny = normal.y / normalLength;
+                                                const nz = normal.z / normalLength;
+                                                const impulseX = nx * bounceForce;
+                                                const impulseY = ny * bounceForce;
+                                                const impulseZ = nz * bounceForce;
+                                                if (!isNaN(impulseX) && !isNaN(impulseY) && !isNaN(impulseZ)) {
+                                                    // Prefer applying impulse to the other body if it's dynamic
+                                                    if (otherBody && otherBody.type !== CANNON.Body.STATIC) {
+                                                        otherBody.applyImpulse(
+                                                            new CANNON.Vec3(impulseX * 0.5, impulseY * 0.5, impulseZ * 0.5),
+                                                            new CANNON.Vec3(0, 0, 0)
+                                                        );
+                                                    } else if (body.type !== CANNON.Body.STATIC) {
+                                                        // Apply a reduced opposite impulse to this body when other is static/absent
+                                                        body.applyImpulse(
+                                                            new CANNON.Vec3(-impulseX * 0.3, -impulseY * 0.3, -impulseZ * 0.3),
+                                                            new CANNON.Vec3(0, 0, 0)
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (error) {
+                                    console.warn('Error in part collision response:', error);
                                 }
                             });
+
+                            // Set collision filters based on CanCollide
+                            if (!instance.CanCollide) {
+                                body.collisionFilterGroup = 2;
+                                body.collisionFilterMask = 0;
+                            } else {
+                                body.collisionFilterGroup = 1;
+                                body.collisionFilterMask = -1;
+                            }
+
+                            // Configure sleep and collision response so parts can come to rest
+                            try {
+                                body.allowSleep = true;
+                                body.sleepSpeedLimit = 0.1;
+                                body.sleepTimeLimit = 1;
+                                body.collisionResponse = !!instance.CanCollide;
+                                // Make parts dynamic for physics simulation
+                                body.type = CANNON.Body.DYNAMIC;
+                            } catch (err) {
+                                // older cannon builds may not support sleep; ignore
+                            }
 
                             physicsWorld.addBody(body);
                             instance.cannonBody = body;
@@ -634,6 +1013,8 @@ async function executeLuaActions(actions, initialVariables = {}) {
                         // Set parent to workspace
                         instance.Parent = RobloxEnvironment.Workspace;
                         RobloxEnvironment.Workspace.Children.push(instance);
+                        // Add as direct property for easy access
+                        RobloxEnvironment.Workspace[instance.Name] = instance;
                         // addToWorkspaceTree(action.varName, 'part'); // Commented out as it's not defined
                     } else if (action.className === 'Frame' ||
                                 action.className === 'TextLabel' ||
@@ -658,13 +1039,20 @@ async function executeLuaActions(actions, initialVariables = {}) {
                             }
                         } catch (error) {
                             console.error('Error creating GUI instance:', error.message);
+                            addConsoleOutput(`Error creating GUI instance: ${error.message}`, 'error');
                             throw error;
                         }
                     }
                     break;
 
                 case 'set_property':
-                    const targetObj = variables[action.varName] || luaObjects[action.varName];
+                    let targetObj = variables[action.varName] || luaObjects[action.varName];
+
+                    // Handle property access like workspace.MySound
+                    if (!targetObj && action.varName.includes('.')) {
+                        targetObj = resolvePropertyAccess(action.varName, variables);
+                    }
+
                     if (targetObj) {
                         const value = parseValue(action.value);
 
@@ -707,7 +1095,20 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                     const threeVec = value instanceof RobloxVector3 ? value.toThreeVector3() : value;
                                     targetObj.Size = threeVec;
                                     if (targetObj.threeObject) {
-                                        targetObj.threeObject.scale.copy(threeVec).multiplyScalar(0.5);
+                                        // Geometry is BoxGeometry(1,1,1), so scale = Size to match size
+                                        targetObj.threeObject.scale.copy(threeVec);
+                                    }
+                                    // Update physics shape if it exists
+                                    if (targetObj.cannonBody && targetObj.cannonBody.shapes[0]) {
+                                        const halfExtents = new CANNON.Vec3(threeVec.x / 2, threeVec.y / 2, threeVec.z / 2);
+                                        targetObj.cannonBody.shapes[0] = new CANNON.Box(halfExtents);
+                                        targetObj.cannonBody.updateMassProperties();
+                                        targetObj.cannonBody.updateAABB();
+                                        // Remove and re-add to world to ensure collision detection updates
+                                        if (physicsWorld) {
+                                            physicsWorld.removeBody(targetObj.cannonBody);
+                                            physicsWorld.addBody(targetObj.cannonBody);
+                                        }
                                     }
                                 }
                                 break;
@@ -739,10 +1140,59 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                 }
                                 break;
                             case 'Transparency':
+                            case 'transparency':
                                 targetObj.Transparency = parseFloat(value) || 0;
                                 if (targetObj.threeObject && targetObj.threeObject.material) {
-                                    targetObj.threeObject.material.transparent = true;
-                                    targetObj.threeObject.material.opacity = 1 - targetObj.Transparency;
+                                    if (targetObj.Transparency > 0) {
+                                        targetObj.threeObject.material.transparent = true;
+                                        targetObj.threeObject.material.opacity = 1 - targetObj.Transparency;
+                                    } else {
+                                        targetObj.threeObject.material.transparent = false;
+                                        targetObj.threeObject.material.opacity = 1;
+                                    }
+                                }
+                                // Also apply to GUI DOM elements
+                                if (targetObj.element) {
+                                    targetObj.element.style.opacity = 1 - targetObj.Transparency;
+                                }
+                                break;
+                            case 'BackgroundTransparency':
+                                targetObj.BackgroundTransparency = parseFloat(value) || 0;
+                                if (targetObj.updateStyle) {
+                                    targetObj.updateStyle();
+                                }
+                                if (targetObj.element) {
+                                    targetObj.element.style.opacity = 1 - targetObj.BackgroundTransparency;
+                                }
+                                break;
+                            case 'TextColor3':
+                                // Handle Color3.new(r, g, b) format
+                                if (typeof value === 'string' && value.startsWith('Color3.new')) {
+                                    const colorMatch = value.match(/Color3\.new\(([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+                                    if (colorMatch) {
+                                        const r = parseFloat(colorMatch[1]) || 0;
+                                        const g = parseFloat(colorMatch[2]) || 0;
+                                        const b = parseFloat(colorMatch[3]) || 0;
+                                        targetObj.TextColor3 = new THREE.Color(r, g, b);
+                                    }
+                                } else if (value instanceof THREE.Color) {
+                                    targetObj.TextColor3 = value;
+                                }
+                                if (targetObj.updateStyle) {
+                                    targetObj.updateStyle();
+                                }
+                                if (targetObj.element && targetObj.TextColor3) {
+                                    const hex = '#' + targetObj.TextColor3.getHexString();
+                                    targetObj.element.style.color = hex;
+                                }
+                                break;
+                            case 'TextSize':
+                                targetObj.TextSize = parseInt(value) || 14;
+                                if (targetObj.updateStyle) {
+                                    targetObj.updateStyle();
+                                }
+                                if (targetObj.element) {
+                                    targetObj.element.style.fontSize = targetObj.TextSize + 'px';
                                 }
                                 break;
                             case 'Anchored':
@@ -751,11 +1201,32 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                     targetObj.cannonBody.mass = targetObj.Anchored ? 0 : 1;
                                     targetObj.cannonBody.type = targetObj.Anchored ? CANNON.Body.STATIC : CANNON.Body.DYNAMIC;
                                     targetObj.cannonBody.updateMassProperties();
+                                    // Remove and re-add to world to ensure changes take effect
+                                    if (physicsWorld) {
+                                        physicsWorld.removeBody(targetObj.cannonBody);
+                                        physicsWorld.addBody(targetObj.cannonBody);
+                                    }
                                 }
                                 break;
                             case 'CanCollide':
                                 targetObj.CanCollide = value === 'true' || value === true;
-                                updateCollisionVisualFeedback(targetObj);
+                                // Update physics body collision filters
+                                if (targetObj.cannonBody) {
+                                    if (!targetObj.CanCollide) {
+                                        targetObj.cannonBody.collisionFilterGroup = 2; // Non-collidable group
+                                        targetObj.cannonBody.collisionFilterMask = 0; // Don't collide with anything
+                                        targetObj.cannonBody.collisionResponse = false;
+                                    } else {
+                                        targetObj.cannonBody.collisionFilterGroup = 1; // Collidable group
+                                        targetObj.cannonBody.collisionFilterMask = -1; // Collide with everything
+                                        targetObj.cannonBody.collisionResponse = true;
+                                    }
+                                    // Remove and re-add to world to ensure collision detection updates
+                                    if (physicsWorld) {
+                                        physicsWorld.removeBody(targetObj.cannonBody);
+                                        physicsWorld.addBody(targetObj.cannonBody);
+                                    }
+                                }
                                 break;
                             case 'Parent':
                                 if (value === 'workspace') {
@@ -781,6 +1252,22 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                 }
                                 break;
                             case 'Name':
+                                // Update workspace property if this object is in workspace
+                                if (targetObj.Parent === RobloxEnvironment.Workspace) {
+                                    // Remove old property name
+                                    delete RobloxEnvironment.Workspace[targetObj.Name];
+                                    // Set new property name
+                                    RobloxEnvironment.Workspace[value] = targetObj;
+                                    // Keep luaObjects mapping consistent: remove any keys that pointed to this object and add the new name
+                                    try {
+                                        for (const k of Object.keys(luaObjects)) {
+                                            if (luaObjects[k] === targetObj) delete luaObjects[k];
+                                        }
+                                        luaObjects[value] = targetObj;
+                                    } catch (e) {
+                                        console.warn('Failed to update luaObjects mapping for Name change', e);
+                                    }
+                                }
                                 targetObj.Name = value;
                                 break;
                             case 'Text':
@@ -809,7 +1296,13 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     break;
 
                 case 'connect_event':
-                    const eventObj = variables[action.varName] || luaObjects[action.varName];
+                    let eventObj = variables[action.varName] || luaObjects[action.varName];
+
+                    // Handle property access like workspace.MyPart
+                    if (!eventObj && action.varName.includes('.')) {
+                        eventObj = resolvePropertyAccess(action.varName, variables);
+                    }
+
                     if (eventObj) {
                         // Create event connection
                         const connection = {
@@ -858,7 +1351,13 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     break;
 
                 case 'call_method':
-                    const methodObj = variables[action.varName] || luaObjects[action.varName];
+                    let methodObj = variables[action.varName] || luaObjects[action.varName];
+
+                    // Handle property access like workspace.MySound
+                    if (!methodObj && action.varName.includes('.')) {
+                        methodObj = resolvePropertyAccess(action.varName, variables);
+                    }
+
                     if (methodObj) {
                         switch (action.method) {
                             case 'Spin':
@@ -875,8 +1374,26 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                 }
                                 break;
                             case 'Play':
-                                if (methodObj.ClassName === 'Sound' && methodObj.audio) {
-                                    methodObj.audio.play();
+                                if (methodObj.ClassName === 'Sound') {
+                                    // Mark sound as pending play - will be played on next user interaction
+                                    methodObj.pendingPlay = true;
+                                    console.log('Sound marked for playback on next user interaction');
+
+                                    // Try to play immediately (might work if user has interacted recently)
+                                    playSoundIfAllowed(methodObj);
+                                }
+                                break;
+                            case 'Stop':
+                                if (methodObj.ClassName === 'Sound') {
+                                    if (methodObj.html5Audio) {
+                                        methodObj.html5Audio.pause();
+                                        methodObj.html5Audio.currentTime = 0;
+                                    }
+                                    if (methodObj.audio) {
+                                        methodObj.audio.stop();
+                                    }
+                                    methodObj.isPlaying = false;
+                                    methodObj.pendingPlay = false; // Cancel any pending play
                                 }
                                 break;
                             case 'Destroy':
@@ -907,19 +1424,44 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                 console.log(`Executed script: ${action.varName}`);
                             } catch (error) {
                                 console.error(`Error executing script ${action.varName}: ${error.message}`);
+                                addConsoleOutput(`Error executing script ${action.varName}: ${error.message}`, 'error');
                             }
                         } else {
                             console.error(`Error: Object '${action.varName}' not found for method call`);
+                            addConsoleOutput(`Error: Object '${action.varName}' not found for method call`, 'error');
                         }
                     }
                     break;
 
                 case 'set_variable':
-                    variables[action.varName] = parseValue(action.value);
+                    // Handle complex property access like game.Workspace.part_1
+                    if (action.value.includes('.')) {
+                        const parts = action.value.split('.');
+                        let currentObj = variables[parts[0]] || window[parts[0]];
+                        for (let i = 1; i < parts.length; i++) {
+                            if (currentObj && currentObj[parts[i]]) {
+                                currentObj = currentObj[parts[i]];
+                            } else {
+                                console.log(`[DEBUG] Property access failed at "${parts[i]}" in "${action.value}"`);
+                                currentObj = undefined;
+                                break;
+                            }
+                        }
+                        variables[action.varName] = currentObj;
+                        console.log(`[DEBUG] Set variable ${action.varName} to:`, currentObj);
+                    } else {
+                        variables[action.varName] = parseValue(action.value);
+                    }
                     break;
 
                 case 'animate_part':
-                    const animObj = variables[action.varName] || luaObjects[action.varName];
+                    let animObj = variables[action.varName] || luaObjects[action.varName];
+
+                    // Handle property access like workspace.MyPart
+                    if (!animObj && action.varName.includes('.')) {
+                        animObj = resolvePropertyAccess(action.varName, variables);
+                    }
+
                     if (animObj && animObj.threeObject) {
                         // Simple animation: move in a circle
                         const time = performance.now() * 0.001;
@@ -936,7 +1478,13 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     break;
 
                 case 'spin_part':
-                    const spinObj = variables[action.varName] || luaObjects[action.varName];
+                    let spinObj = variables[action.varName] || luaObjects[action.varName];
+
+                    // Handle property access like workspace.MyPart
+                    if (!spinObj && action.varName.includes('.')) {
+                        spinObj = resolvePropertyAccess(action.varName, variables);
+                    }
+
                     if (spinObj && spinObj.threeObject) {
                         // Spin the part around Y axis
                         const time = performance.now() * 0.001;
@@ -951,6 +1499,8 @@ async function executeLuaActions(actions, initialVariables = {}) {
 
                 case 'print':
                     console.log('LUA PRINT:', action.message);
+                    // Also show in console
+                    addConsoleOutput(action.message, 'info');
                     // Also show in chat or UI if possible
                     if (typeof appendChatBoxMessage === 'function') {
                         appendChatBoxMessage('SYSTEM', '[SCRIPT] ' + action.message);
@@ -959,6 +1509,8 @@ async function executeLuaActions(actions, initialVariables = {}) {
             }
         } catch (error) {
             console.error('Error executing action:', error);
+            // Also show in console
+            addConsoleOutput(error.message, 'error');
             throw error;
         }
     }
@@ -1021,8 +1573,9 @@ function parseValue(valueStr) {
         );
     }
 
-    // Parse strings
-    if (valueStr.startsWith("'") && valueStr.endsWith("'")) {
+    // Parse strings (remove both single and double quotes)
+    if ((valueStr.startsWith("'") && valueStr.endsWith("'")) ||
+        (valueStr.startsWith('"') && valueStr.endsWith('"'))) {
         return valueStr.slice(1, -1);
     }
 
@@ -1503,11 +2056,12 @@ let raycaster;
 
 const objects = [];
 let prevTime = performance.now();
-const velocidade = 20.0;
+const velocidade = 20.0; // Movement speed
 
 let cameraOffset;
 let cameraTarget = new THREE.Vector3();
 let baseCameraOffset;
+let smoothedCameraPosition = new THREE.Vector3();
 
 let audioListener, walkSound, jumpSound, clickSound, spawnSound, deathSound, ouchSound, launchSound, currentDeathSound, danceMusic;
 let isMobile = false; // This will be updated dynamically
@@ -1550,6 +2104,10 @@ const pendingFaces = {};
 
 let lastSentTime = 0;
 const sendInterval = 100; // ms, so 10 times per second
+
+// Physics ownership for parts
+let partOwnership = {};
+let lastPartUpdate = 0;
 
 function playClickSound() {
     if (clickSound && clickSound.buffer) {
@@ -1601,17 +2159,7 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    const hideBtn = document.getElementById('hide-player-list-btn');
-    const playerList = document.getElementById('player-list');
-    const playerListContainer = document.getElementById('player-list-container');
-
-    let isPlayerListHidden = false;
-
-    hideBtn.addEventListener('click', () => {
-        isPlayerListHidden = !isPlayerListHidden;
-        playerList.style.display = isPlayerListHidden ? 'none' : '';
-        hideBtn.textContent = isPlayerListHidden ? 'Show' : 'Hide';
-    });
+    // Player list is now always visible and simplified
 });
 
 // Chat listener is now bound after socket connects inside initSocket()
@@ -1653,7 +2201,6 @@ function showBubbleChat(chatPlayerId, nickname, message) {
     bubble.style.padding = '6px 14px';
     bubble.style.fontSize = '16px';
     bubble.style.pointerEvents = 'none';
-    bubble.style.whiteSpace = 'pre-line';
     bubble.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
     bubble.style.transition = 'opacity 0.3s';
     bubble.style.zIndex = 200;
@@ -1700,12 +2247,12 @@ function createPlayer(headModel) {
     // Arm Materials - with stud texture on top and bottom
     const textureLoader = new THREE.TextureLoader();
 
-    const topStudsTexture = textureLoader.load('roblox-stud.png');
+    const topStudsTexture = textureLoader.load('imgs/roblox-stud.png');
     topStudsTexture.wrapS = THREE.RepeatWrapping;
     topStudsTexture.wrapT = THREE.RepeatWrapping;
     topStudsTexture.repeat.set(1, 1);
 
-    const bottomStudsTexture = textureLoader.load('Studdown.png');
+    const bottomStudsTexture = textureLoader.load('imgs/Studdown.png');
     bottomStudsTexture.wrapS = THREE.RepeatWrapping;
     bottomStudsTexture.wrapT = THREE.RepeatWrapping;
     bottomStudsTexture.repeat.set(1, 1);
@@ -1747,7 +2294,7 @@ function createPlayer(headModel) {
 
     // -- Roblox 2006 Badge --
     const badgeTextureLoader = new THREE.TextureLoader();
-    const badgeTexture = badgeTextureLoader.load('Roblox_icon_2006.svg');
+    const badgeTexture = badgeTextureLoader.load('imgs/Roblox_icon_2006.svg');
     const badgeMaterial = new THREE.MeshLambertMaterial({ 
         map: badgeTexture,
         transparent: true,
@@ -1817,6 +2364,11 @@ function createPlayer(headModel) {
     // For physics, keep at y=0 and offset physics body instead.
     playerGroup.position.y = 0;
 
+    // Calculate bounding box for exact dimensions
+    const box = new THREE.Box3().setFromObject(playerGroup);
+    const size = box.getSize(new THREE.Vector3());
+    console.log('Player visual dimensions (width x height x depth):', size.x, size.y, size.z);
+
     return playerGroup;
 }
 
@@ -1851,9 +2403,9 @@ function updatePlayerColors(player, colors) {
 
 function createRemotePlayer(headModel, playerData) {
     const playerGroup = createPlayer(headModel);
-    playerGroup.position.set(playerData.x, playerData.y + 1.0, playerData.z); // Offset visual upward to align feet with physics body bottom
+    playerGroup.position.set(playerData.x, playerData.y + 0.65, playerData.z); // Offset visual upward to align feet with physics body bottom
     playerGroup.rotation.y = playerData.rotation;
-    playerGroup.userData.targetPosition = new THREE.Vector3(playerData.x, playerData.y, playerData.z);
+    playerGroup.userData.targetPosition = new THREE.Vector3(playerData.x, playerData.y + 0.65, playerData.z);
     playerGroup.userData.targetQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, playerData.rotation, 0));
     updatePlayerColors(playerGroup, playerData.colors);
     // Hat application is handled in ensureRemotePlayer() to avoid duplicate loads
@@ -1862,7 +2414,7 @@ function createRemotePlayer(headModel, playerData) {
     playerGroup.userData.nickname = playerData.nickname || "Guest";
 
     // Load face for remote player
-    const faceId = playerData.faceId || 'OriginalGlitchedFace.webp';
+    const faceId = playerData.faceId || 'imgs/OriginalGlitchedFace.webp';
     addFaceToPlayer(playerGroup, faceId);
 
     return playerGroup;
@@ -1898,7 +2450,7 @@ function ensureRemotePlayer(playerData) {
         }
 
         // Apply any pending face update, falling back to initial face from snapshot
-        const faceId = pendingFaces[playerData.id] ?? playerData.faceId ?? 'OriginalGlitchedFace.webp';
+        const faceId = pendingFaces[playerData.id] ?? playerData.faceId ?? 'imgs/OriginalGlitchedFace.webp';
         addFaceToPlayer(remotePlayer, faceId);
         delete pendingFaces[playerData.id];
 
@@ -1941,8 +2493,10 @@ function initSocket() {
     
     socket.on('connect', () => {
         playerId = socket.id;
-        const faceId = localStorage.getItem('rogold_face') || 'OriginalGlitchedFace.webp';
+        const faceId = localStorage.getItem('rogold_face') || 'imgs/OriginalGlitchedFace.webp';
         socket.emit('register', { nickname, faceId }); // <--- ENVIA O NICKNAME E FACE
+
+        try { socket.emit('requestParts'); } catch (e) { console.warn('requestParts emit failed', e); }
 
         console.log('Connected to server');
         statusEl.textContent = `Online (${Object.keys(otherPlayers).length + 1} players)`;
@@ -2031,6 +2585,179 @@ function initSocket() {
         // Ensure the player list reflects all visible players after initial snapshot
         updatePlayerList();
     });
+
+    // Remote part movement: update local scene when another client moved a part
+    socket.on('partMoved', (data) => {
+        try {
+            if (!data || !data.name) return;
+            // Try multiple lookup strategies: direct luaObjects key, workspace property, or matching Name
+            let inst = luaObjects[data.name] || RobloxEnvironment.Workspace[data.name];
+            if (!inst) {
+                inst = Object.values(luaObjects).find(i => i && i.Name === data.name);
+            }
+            if (!inst) return;
+            // Set position directly for moved parts
+            if (data.position) {
+                inst.threeObject.position.set(data.position.x, data.position.y, data.position.z);
+                if (inst.cannonBody) {
+                    inst.cannonBody.position.set(data.position.x, data.position.y, data.position.z);
+                    inst.cannonBody.velocity.set(0, 0, 0); // Stop velocity when moved
+                }
+            }
+            if (data.rotation) {
+                inst.threeObject.rotation.set(data.rotation.x, data.rotation.y, data.rotation.z);
+                if (inst.cannonBody) {
+                    inst.cannonBody.quaternion.setFromEuler(data.rotation.x, data.rotation.y, data.rotation.z);
+                }
+            }
+            // Apply velocity for physics momentum
+            if (data.velocity && inst.cannonBody) {
+                inst.cannonBody.velocity.set(data.velocity.x || 0, data.velocity.y || 0, data.velocity.z || 0);
+            }
+            // Allow parts to sleep in multiplayer
+            if (inst.cannonBody) {
+                inst.cannonBody.allowSleep = true;
+            }
+        } catch (err) {
+            console.warn('Error handling partMoved', err);
+        }
+    });
+
+    // Server-sent initial parts (created in studio or persisted)
+    socket.on('initialParts', (parts) => {
+        try {
+            if (!parts || !Array.isArray(parts)) return;
+            parts.forEach(objData => {
+                if (!objData || !objData.name) return;
+                if (luaObjects[objData.name]) {
+                    // Update existing part
+                    const inst = luaObjects[objData.name];
+                    if (objData.position) {
+                        const pos = Array.isArray(objData.position) ? objData.position : [objData.position.x, objData.position.y, objData.position.z];
+                        inst.Position = new THREE.Vector3(pos[0], pos[1], pos[2]);
+                        if (inst.threeObject) inst.threeObject.position.copy(inst.Position);
+                        if (inst.cannonBody) inst.cannonBody.position.copy(inst.Position);
+                    }
+                    if (objData.rotation) {
+                        const rot = Array.isArray(objData.rotation) ? objData.rotation : [objData.rotation.x, objData.rotation.y, objData.rotation.z];
+                        inst.Rotation = new THREE.Euler(rot[0], rot[1], rot[2]);
+                        if (inst.threeObject) inst.threeObject.rotation.copy(inst.Rotation);
+                        if (inst.cannonBody) inst.cannonBody.quaternion.setFromEuler(inst.Rotation.x, inst.Rotation.y, inst.Rotation.z);
+                    }
+                    return;
+                }
+
+                const size = objData.size || (Array.isArray(objData.Size) ? { x: objData.Size[0], y: objData.Size[1], z: objData.Size[2] } : { x: 4, y: 4, z: 4 });
+                const position = objData.position || (Array.isArray(objData.Position) ? { x: objData.Position[0], y: objData.Position[1], z: objData.Position[2] } : { x: 0, y: 3, z: 0 });
+                const rotation = objData.rotation || (Array.isArray(objData.Rotation) ? { x: objData.Rotation[0], y: objData.Rotation[1], z: objData.Rotation[2] } : { x: 0, y: 0, z: 0 });
+
+                const geometry = new THREE.BoxGeometry(1,1,1);
+                let color = 0xff6600;
+                if (objData.color) {
+                    if (typeof objData.color === 'string') color = new THREE.Color(objData.color).getHex();
+                    else if (typeof objData.color === 'object' && 'r' in objData.color) color = new THREE.Color(objData.color.r, objData.color.g, objData.color.b).getHex();
+                } else if (objData.Color && Array.isArray(objData.Color)) {
+                    color = new THREE.Color(objData.Color[0], objData.Color[1], objData.Color[2]).getHex();
+                }
+                const material = new THREE.MeshLambertMaterial({ color });
+                const part = new THREE.Mesh(geometry, material);
+                part.scale.set(size.x, size.y, size.z);
+                part.position.set(position.x, position.y, position.z);
+                part.rotation.set(rotation.x || 0, rotation.y || 0, rotation.z || 0);
+                part.castShadow = true;
+                part.receiveShadow = true;
+                scene.add(part);
+
+                const robloxPart = new RobloxInstance('Part', objData.name);
+                robloxPart.threeObject = part;
+                robloxPart.Position = part.position.clone();
+                robloxPart.Size = new THREE.Vector3(size.x, size.y, size.z);
+                robloxPart.Color = new THREE.Color(color);
+                robloxPart.CanCollide = objData.canCollide !== false;
+                robloxPart.Anchored = objData.anchored !== false;
+
+                robloxPart.Parent = RobloxEnvironment.Workspace;
+                RobloxEnvironment.Workspace.Children.push(robloxPart);
+                RobloxEnvironment.Workspace[objData.name] = robloxPart;
+                luaObjects[objData.name] = robloxPart;
+
+                if (robloxPart.CanCollide && physicsWorld) {
+                    const shape = new CANNON.Box(new CANNON.Vec3(size.x / 2, size.y / 2, size.z / 2));
+                    const body = new CANNON.Body({
+                        mass: robloxPart.Anchored ? 0 : 1,
+                        position: new CANNON.Vec3(part.position.x, part.position.y, part.position.z),
+                        shape: shape,
+                        material: partMaterial,
+                        linearDamping: ROBLOX_LINEAR_DAMPING,
+                        angularDamping: ROBLOX_ANGULAR_DAMPING,
+                        collisionFilterGroup: 1,
+                        collisionFilterMask: -1
+                    });
+                    body.userData = { mesh: part, instance: robloxPart };
+                    body.addEventListener && body.addEventListener('collide', (e) => {
+                        if (robloxPart.touched && typeof robloxPart.touched === 'function') {
+                            try { robloxPart.touched(e.body.userData?.instance || e.body); } catch (e) {}
+                        }
+                    });
+                    physicsWorld.addBody(body);
+                    robloxPart.cannonBody = body;
+                }
+            });
+        } catch (e) {
+            console.warn('Error handling initialParts', e);
+        }
+    });
+
+    // When another client creates a part, make it locally
+    socket.on('partCreated', (data) => {
+        try {
+            if (!data || !data.name) return;
+            if (luaObjects[data.name]) return;
+            // reuse same logic as initialParts for single item
+            const objData = data;
+            const size = objData.size || (Array.isArray(objData.Size) ? { x: objData.Size[0], y: objData.Size[1], z: objData.Size[2] } : { x: 4, y: 4, z: 4 });
+            const position = objData.position || (Array.isArray(objData.Position) ? { x: objData.Position[0], y: objData.Position[1], z: objData.Position[2] } : { x: 0, y: 3, z: 0 });
+            const rotation = objData.rotation || (Array.isArray(objData.Rotation) ? { x: objData.Rotation[0], y: objData.Rotation[1], z: objData.Rotation[2] } : { x: 0, y: 0, z: 0 });
+            const geometry = new THREE.BoxGeometry(1,1,1);
+            const material = new THREE.MeshLambertMaterial({ color: objData.color ? new THREE.Color(objData.color).getHex() : 0xff6600 });
+            const part = new THREE.Mesh(geometry, material);
+            part.scale.set(size.x, size.y, size.z);
+            part.position.set(position.x, position.y, position.z);
+            scene.add(part);
+            const robloxPart = new RobloxInstance('Part', objData.name);
+            robloxPart.threeObject = part;
+            robloxPart.Position = part.position.clone();
+            robloxPart.Size = new THREE.Vector3(size.x, size.y, size.z);
+            robloxPart.Color = new THREE.Color(material.color.getHex());
+            robloxPart.CanCollide = objData.canCollide !== false;
+            robloxPart.Anchored = objData.anchored !== false;
+            robloxPart.Parent = RobloxEnvironment.Workspace;
+            RobloxEnvironment.Workspace.Children.push(robloxPart);
+            RobloxEnvironment.Workspace[objData.name] = robloxPart;
+            luaObjects[objData.name] = robloxPart;
+            if (robloxPart.CanCollide && physicsWorld) {
+                const shape = new CANNON.Box(new CANNON.Vec3(size.x / 2, size.y / 2, size.z / 2));
+                const body = new CANNON.Body({ mass: robloxPart.Anchored ? 0 : 1, position: new CANNON.Vec3(part.position.x, part.position.y, part.position.z), shape: shape, material: partMaterial });
+                physicsWorld.addBody(body);
+                robloxPart.cannonBody = body;
+            }
+        } catch (e) {
+            console.warn('Error handling partCreated', e);
+        }
+    });
+
+    socket.on('partDeleted', (data) => {
+        try {
+            if (!data || !data.name) return;
+            const inst = luaObjects[data.name];
+            if (!inst) return;
+            if (inst.threeObject && inst.threeObject.parent) inst.threeObject.parent.remove(inst.threeObject);
+            if (inst.Parent) inst.Parent.Children = inst.Parent.Children.filter(c => c !== inst);
+            delete luaObjects[data.name];
+        } catch (e) {
+            console.warn('Error handling partDeleted', e);
+        }
+    });
     
     socket.on('playerJoined', (playerData) => {
         ensureRemotePlayer(playerData);
@@ -2056,16 +2783,21 @@ function initSocket() {
             }
 
             if (!otherPlayers[playerData.id]) {
-                  ensureRemotePlayer(playerData);
+                   ensureRemotePlayer(playerData);
             } else {
-                  // This is an existing player, update their state for interpolation
-                const remotePlayer = otherPlayers[playerData.id];
-                remotePlayer.userData.targetPosition.set(playerData.x, playerData.y, playerData.z);
-                // Update visual position with offset
-                remotePlayer.position.lerp(new THREE.Vector3(playerData.x, playerData.y + 1.0, playerData.z), 0.2);
-                
-                const targetQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, playerData.rotation, 0));
-                remotePlayer.userData.targetQuaternion = targetQuaternion;
+                     // This is an existing player, update their state for interpolation
+                     const remotePlayer = otherPlayers[playerData.id];
+                     remotePlayer.userData.targetPosition.set(playerData.x, playerData.y + 0.6, playerData.z);
+
+                  const targetQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, playerData.rotation, 0));
+                  remotePlayer.userData.targetQuaternion = targetQuaternion;
+
+                  // Update equipping state
+                  remotePlayer.userData.isEquipping = playerData.isEquipping || false;
+                  remotePlayer.userData.isUnequipping = playerData.isUnequipping || false;
+                  remotePlayer.userData.equipAnimProgress = playerData.equipAnimProgress || 0;
+                  remotePlayer.userData.unequipAnimProgress = playerData.unequipAnimProgress || 0;
+                  remotePlayer.userData.equippedTool = playerData.equippedTool || null;
 
                 // Update animation based on server state
                 if (playerData.isInAir) {
@@ -2186,6 +2918,24 @@ socket.on("remoteUnequip", (data) => {
     socket.on('stopDance', (dancerId) => {
         if (dancerId && otherPlayers[dancerId]) {
             otherPlayers[dancerId].isDancing = false;
+            // Reset dance rotations
+            const torso = otherPlayers[dancerId].getObjectByName("Torso");
+            const head = otherPlayers[dancerId].getObjectByName("Head");
+            torso.rotation.y = 0;
+            torso.rotation.z = 0;
+            otherPlayers[dancerId].rightArm.rotation.y = 0;
+            otherPlayers[dancerId].rightArm.rotation.z = 0;
+            otherPlayers[dancerId].leftArm.rotation.y = 0;
+            otherPlayers[dancerId].leftArm.rotation.z = 0;
+            head.rotation.y = 0;
+            otherPlayers[dancerId].rightLeg.rotation.x = 0;
+            otherPlayers[dancerId].rightLeg.rotation.z = 0;
+            otherPlayers[dancerId].leftLeg.rotation.x = 0;
+            otherPlayers[dancerId].leftLeg.rotation.z = 0;
+            // Stop dance sound
+            if (otherPlayers[dancerId].userData.danceSound && otherPlayers[dancerId].userData.danceSound.isPlaying) {
+                otherPlayers[dancerId].userData.danceSound.stop();
+            }
         }
     });
 
@@ -2238,24 +2988,28 @@ socket.on('explosion', (data) => {
     spawnExplosion(new THREE.Vector3(data.position.x, data.position.y, data.position.z));
 });
 
-// Player death: show respawn effect to killer and others by hiding victim temporarily.
+// Player death: show respawn effect to killer and others.
 // Explosion visuals are already handled by the 'explosion' event above.
 socket.on('playerDied', ({ killer, victim }) => {
+    console.log('playerDied event received for victim:', victim, 'killer:', killer);
     // Local victim handles its own full respawn flow
-    if (victim === playerId) return;
+    if (victim === playerId) {
+        respawnPlayer();
+        return;
+    }
 
     const remote = otherPlayers[victim];
     if (!remote) return;
 
-    // Hide victim briefly to simulate death/respawn for all other clients
-    remote.visible = false;
-    setTimeout(() => {
-        // The victim's client will reposition on its own respawn;
-        // we only restore visibility here for the observers.
-        if (otherPlayers[victim]) {
-            otherPlayers[victim].visible = true;
-        }
-    }, 3000);
+    // Spawn ragdoll for remote player
+    spawnRagdollForPlayer(victim);
+});
+
+// Health update from server
+socket.on('healthUpdate', ({ health }) => {
+    playerHealth = health;
+    document.getElementById('health-text').textContent = playerHealth;
+    document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
 });
 
 // Evento específico para o Daniel
@@ -2265,7 +3019,7 @@ socket.on('danielEvent', () => {
     danielAudio.play();
     // Mostra imagem na tela
     const img = document.createElement('img');
-    img.src = 'daniel.png';
+    img.src = 'imgs/daniel.png';
     img.style.position = 'fixed';
     img.style.top = 0;
     img.style.left = 0;
@@ -2313,6 +3067,46 @@ function updatePlayerList() {
     });
 }
 
+const backpackItemsData = [
+    { name: 'Rocket Launcher', type: 'tool', image: 'imgs/launcher.jpg' },
+    // Add more items as needed
+];
+
+function updateBackpackItems(searchQuery = '') {
+    const backpackItems = document.getElementById('backpack-items');
+    if (!backpackItems) return;
+    backpackItems.innerHTML = '';
+    const filteredItems = backpackItemsData.filter(item => {
+        // Check ownership and settings
+        if (item.name === 'Rocket Launcher') {
+            return ownedGears.includes('gear_rocket_launcher') && areGearsAllowed();
+        }
+        // For other items, assume owned or add checks as needed
+        return item.name.toLowerCase().includes(searchQuery.toLowerCase());
+    }).filter(item =>
+        item.name.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    filteredItems.forEach(item => {
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'backpack-item';
+        itemDiv.innerHTML = `<img src="${item.image}" alt="${item.name}" style="width:100%; height:100%; object-fit:cover;">`;
+        itemDiv.addEventListener('click', () => {
+            // Equip item
+            if (item.type === 'tool') {
+                if (item.name === 'Rocket Launcher') {
+                    equipRocketLauncher();
+                }
+            }
+            backpackModal.style.display = 'none';
+            backpackToolBtn.classList.remove('open');
+        });
+        backpackItems.appendChild(itemDiv);
+    });
+    if (filteredItems.length === 0) {
+        backpackItems.innerHTML = '<p style="color: gray; font-size: 14px; text-align: center;">você não tem nenhuma gear! compre alguma no catalogo e aparecera aqui</p>';
+    }
+}
+
 // Realtime player list updates are bound within initSocket() after the socket is created.
 
 // Also call updatePlayerList() after you update otherPlayers in your code
@@ -2354,13 +3148,13 @@ function initGame() {
         allowSleep: false // Classic Roblox physics didn't allow parts to sleep
     });
 
-    physicsWorld.solver.iterations = 50; // Extreme collision stability
+    physicsWorld.solver.iterations = 100; // Increased to 100 for maximum collision resolution
     physicsWorld.defaultContactMaterial.friction = ROBLOX_FRICTION;
     physicsWorld.defaultContactMaterial.restitution = ROBLOX_RESTITUTION;
 
-    // Add damping to prevent excessive sliding
-    physicsWorld.defaultContactMaterial.contactEquationStiffness = 1e8;
-    physicsWorld.defaultContactMaterial.contactEquationRelaxation = 3;
+    // Reduced stiffness to prevent sticking while maintaining collision integrity
+    physicsWorld.defaultContactMaterial.contactEquationStiffness = 1e5;
+    physicsWorld.defaultContactMaterial.contactEquationRelaxation = 4;
 
     const groundMaterial = new CANNON.Material("groundMaterial");
     partMaterial = new CANNON.Material("partMaterial");
@@ -2372,8 +3166,8 @@ function initGame() {
         {
             friction: ROBLOX_FRICTION,
             restitution: ROBLOX_RESTITUTION,
-            contactEquationStiffness: 1e8, // Much stiffer contacts to prevent falling through
-            contactEquationRelaxation: 3 // Faster contact solving
+            contactEquationStiffness: Infinity, // Infinite stiffness for ground contacts
+            contactEquationRelaxation: 4 // Consistent relaxation
         }
     );
     physicsWorld.addContactMaterial(groundPartContactMaterial);
@@ -2385,21 +3179,20 @@ function initGame() {
         {
             friction: ROBLOX_FRICTION,
             restitution: ROBLOX_RESTITUTION,
-            contactEquationStiffness: 1e6,
-            contactEquationRelaxation: 3
+            contactEquationStiffness: 1e5, // Consistent stiffness
+            contactEquationRelaxation: 4 // Consistent relaxation
         }
     );
     physicsWorld.addContactMaterial(partPartContactMaterial);
 
     const groundBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
-        shape: new CANNON.Plane(),
+        shape: new CANNON.Box(new CANNON.Vec3(1000, 1, 1000)),
         material: groundMaterial,
         collisionFilterGroup: 1, // Ground in group 1
         collisionFilterMask: -1 // Collide with all groups
     });
-    groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0); // horizontal with normal pointing up
-    groundBody.position.set(0, 0, 0); // Match baseplate visual position
+    groundBody.position.set(0, -1, 0); // Thick box from y=-2 to y=0
     groundBody.userData = { isGround: true };
     physicsWorld.addBody(groundBody);
 
@@ -2420,6 +3213,13 @@ function initGame() {
     // Audio setup
     audioListener = new THREE.AudioListener();
     camera.add(audioListener);
+    // Expose globally so our gesture resume helper can find it early
+    try { window.audioListener = audioListener; } catch (e) {}
+
+    // Try to resume audio context immediately
+    if (audioListener.context && audioListener.context.state === 'suspended') {
+        audioListener.context.resume().catch(e => console.warn('Could not resume audio context:', e));
+    }
 
     walkSound = new THREE.Audio(audioListener);
     jumpSound = new THREE.Audio(audioListener);
@@ -2507,9 +3307,9 @@ function initGame() {
         player = createPlayer(head);
 
         // Load face after player is created
-        const savedFace = localStorage.getItem('rogold_face') || 'OriginalGlitchedFace.webp';
+        const savedFace = localStorage.getItem('rogold_face') || 'imgs/OriginalGlitchedFace.webp';
         addFaceToPlayer(player, savedFace);
-        player.position.set(0, 2, 0); // Place player exactly at ground level
+        player.position.set(0, 3, 0); // Place player exactly at ground level
         scene.add(player);
 
         controls = new OrbitControls(camera, renderer.domElement);
@@ -2536,6 +3336,28 @@ function initGame() {
                 audioListener.context.resume();
             }
             playClickSound();
+
+            // Play any pending sounds that were triggered by scripts
+            Object.values(luaObjects).forEach(obj => {
+                if (obj.ClassName === 'Sound' && obj.pendingPlay) {
+                    playSoundIfAllowed(obj);
+                }
+            });
+        });
+
+        // Same for touch events (mobile)
+        document.addEventListener('touchstart', function() {
+            // Check if the audio context is running, and resume it if not.
+            if (audioListener.context.state === 'suspended') {
+                audioListener.context.resume();
+            }
+
+            // Play any pending sounds that were triggered by scripts
+            Object.values(luaObjects).forEach(obj => {
+                if (obj.ClassName === 'Sound' && obj.pendingPlay) {
+                    playSoundIfAllowed(obj);
+                }
+            });
         });
 
         // The hint logic can be simplified as OrbitControls doesn't have a lock/unlock state
@@ -2601,14 +3423,20 @@ function initGame() {
         rocketLauncherModel = gltf.scene;
         rocketLauncherModel.visible = false;
         scene.add(rocketLauncherModel);
+
+        // Hide equip button if rocket launcher not owned or gears not allowed
+        const equipBtn = document.getElementById('equip-tool-btn');
+        if (!ownedGears.includes('gear_rocket_launcher') || !areGearsAllowed()) {
+            if (equipBtn) equipBtn.style.display = 'none';
+        }
     });
 }
 
 // Adicione o corpo físico do player:
 function ensurePlayerPhysicsBody() {
     if (player && !player.userData.body) {
-        // Create single unified body shape for better ground alignment
-        const playerShape = new CANNON.Box(new CANNON.Vec3(1, 2, 1));
+        // Create single unified body shape to match visual dimensions 2x4.7x2
+        const playerShape = new CANNON.Box(new CANNON.Vec3(1, 2.35, 1));
 
         // Create body
         const body = new CANNON.Body({
@@ -2617,8 +3445,8 @@ function ensurePlayerPhysicsBody() {
                 friction: ROBLOX_FRICTION,
                 restitution: 0 // No bounce to prevent floating
             }),
-            linearDamping: ROBLOX_LINEAR_DAMPING,
-            angularDamping: ROBLOX_ANGULAR_DAMPING,
+            linearDamping: 0.4, // Increased to 0.4 for better traction
+            angularDamping: 0.6, // Further increased for stability
             fixedRotation: true,
             collisionFilterGroup: 1,
             collisionFilterMask: -1
@@ -2627,29 +3455,48 @@ function ensurePlayerPhysicsBody() {
         // Add single shape centered on the player model
         body.addShape(playerShape, new CANNON.Vec3(0, 0, 0));
 
-        // Position the physics body at the player's current visual position so
-        // collisions and ground detection line up with the mesh.
+        // Position the physics body to align feet with ground
         if (player.position) {
-            body.position.set(player.position.x, player.position.y, player.position.z);
+            body.position.set(player.position.x, player.position.y - 0.65, player.position.z);
         }
 
         // Small safety: prevent body from ever going to sleep (classic Roblox behaviour)
         body.allowSleep = false;
 
+        let contactCount = 0;
+
         // Listen for collisions on the player body and mark that the player can jump
-        // when a contact with an upward-facing normal occurs.
+        // when a contact with any solid body occurs.
         body.addEventListener('collide', (e) => {
             try {
                 const contact = e.contact;
                 if (!contact) return;
-                // contact.ni is the contact normal (from bi to bj). We accept contacts
-                // that have a significant Y component (roughly upwards).
-                const ny = contact.ni ? contact.ni.y : 0;
-                if (Math.abs(ny) > 0.5) {
-                    canJump = true;
+                const otherBody = e.body;
+                contactCount++;
+                if (groundContactTimer) {
+                    clearTimeout(groundContactTimer);
+                    groundContactTimer = null;
                 }
+                hasJumpedThisCycle = false;
+                canJumpFromGround = true;
             } catch (err) {
                 console.warn('Player collide handler error', err);
+            }
+        });
+
+        // Add end contact listener to reset canJumpFromGround when no longer touching any body
+        body.addEventListener('endContact', (e) => {
+            try {
+                const otherBody = e.body;
+                contactCount--;
+                if (contactCount === 0) {
+                    groundContactTimer = setTimeout(() => {
+                        canJumpFromGround = false;
+                        groundContactTimer = null;
+                    }, 100);
+                }
+            } catch (err) {
+                console.warn('Player endContact handler error', err);
             }
         });
 
@@ -2660,7 +3507,7 @@ function ensurePlayerPhysicsBody() {
 
 function createBaseplate() {
     const textureLoader = new THREE.TextureLoader();
-    const studsTexture = textureLoader.load('studs.png');
+    const studsTexture = textureLoader.load('imgs/studs.png');
     studsTexture.wrapS = THREE.RepeatWrapping;
     studsTexture.wrapT = THREE.RepeatWrapping;
     studsTexture.repeat.set(128, 128);
@@ -2674,37 +3521,281 @@ function createBaseplate() {
 }
 
 function createSpawnPoint() {
-    const spawnGroup = new THREE.Group();
+    // Check if SpawnPoint already exists (from loaded game)
+    if (luaObjects['SpawnPoint']) {
+        // Update the existing one with visual and physics if needed
+        const spawnInstance = luaObjects['SpawnPoint'];
+        if (!spawnInstance.threeObject) {
+            console.log('[SPAWN] Creating SpawnPoint visual for loaded game');
+            // Create 3D representation using standard geometry with scale
+            const spawnGeometry = new THREE.BoxGeometry(4, 4, 4);
+            const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+            
+            // Create initial materials array with placeholder (green)
+            const materials = [
+                sideMaterial, // right
+                sideMaterial, // left
+                new THREE.MeshLambertMaterial({ color: 0x00ff00, name: 'SpawnTopPlaceholder' }),  // top (placeholder)
+                sideMaterial, // bottom
+                sideMaterial, // front
+                sideMaterial  // back
+            ];
 
-    // Create 3D spawn platform
-    const spawnGeometry = new THREE.BoxGeometry(10, 0.5, 10);
-    const textureLoader = new THREE.TextureLoader();
-    const spawnTexture = textureLoader.load('spawn.png');
+            const spawn = new THREE.Mesh(spawnGeometry, materials);
+            spawn.position.copy(spawnInstance.Position);
+            spawn.rotation.copy(spawnInstance.Rotation);
+            spawn.scale.set(
+                spawnInstance.Size.x / 4,
+                spawnInstance.Size.y / 4,
+                spawnInstance.Size.z / 4
+            );
+            spawn.receiveShadow = false;
+            spawn.castShadow = true;
+            scene.add(spawn);
+            spawnInstance.threeObject = spawn;
 
-    const topMaterial = new THREE.MeshLambertMaterial({ map: spawnTexture });
+            console.log('[SPAWN] Created mesh, loading texture...');
+            
+            // Load texture asynchronously with cache busting
+            loadTextureWithCacheBust('imgs/spawn.png', 
+                (texture) => {
+                    console.log('[SPAWN] Texture loaded successfully for loaded game');
+                    // Replace top material with textured one
+                    materials[2] = new THREE.MeshLambertMaterial({ map: texture, name: 'SpawnTop' });
+                    // Force Three.js to detect the material change
+                    spawn.material = [...materials];
+                    spawn.material.needsUpdate = true;
+                    console.log('[SPAWN] Applied texture to loaded spawn');
+                },
+                (progress) => {
+                    console.log('[SPAWN] Texture loading progress for loaded game:', progress);
+                },
+                (error) => {
+                    console.warn('[SPAWN] Texture load failed for loaded game:', error);
+                    // Keep the green placeholder - user will see green top instead of textured
+                }
+            );
+
+            // Add physics
+            if (physicsWorld) {
+                const shape = new CANNON.Box(new CANNON.Vec3(
+                    spawnInstance.Size.x / 2,
+                    spawnInstance.Size.y / 2,
+                    spawnInstance.Size.z / 2
+                ));
+                const body = new CANNON.Body({
+                    mass: 0,
+                    shape: shape,
+                    position: new CANNON.Vec3(
+                        spawnInstance.Position.x,
+                        spawnInstance.Position.y,
+                        spawnInstance.Position.z
+                    ),
+                    material: partMaterial
+                });
+                body.userData = { mesh: spawn, instance: spawnInstance };
+                spawnInstance.cannonBody = body;
+
+                // Add collision event listener
+                body.addEventListener('collide', (e) => {
+                    console.log('Spawnpoint collision detected', !!e.contact);
+                    const otherBody = e.body;
+
+                    // Trigger Touched event if the instance has a Touched connection
+                    if (spawnInstance.touched && typeof spawnInstance.touched === 'function') {
+                        spawnInstance.touched(otherBody.userData?.instance || otherBody);
+                    }
+
+                    // Apply Roblox-style collision response
+                    try {
+                        if (e.contact) {
+                            let impactVelocity = e.contact.getImpactVelocityAlongNormal();
+                            console.log('Spawnpoint collision: impactVelocity =', impactVelocity);
+                            if (isNaN(impactVelocity) || !isFinite(impactVelocity)) {
+                                console.warn('Spawnpoint collision: invalid impactVelocity, setting to 0');
+                                impactVelocity = 0;
+                            }
+                            impactVelocity = Math.max(0, Math.min(impactVelocity, 100)); // clamp to reasonable max
+                            if (impactVelocity > 5) {
+                                let bounceForce = impactVelocity * 0.1;
+                                bounceForce = Math.max(0, Math.min(bounceForce, 10)); // clamp bounce force
+                                const normal = e.contact.ni;
+                                console.log('Spawnpoint collision: normal =', normal);
+                                if (normal && !isNaN(normal.x) && !isNaN(normal.y) && !isNaN(normal.z)) {
+                                    const normalLength = Math.sqrt(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z);
+                                    console.log('Spawnpoint collision: normalLength =', normalLength);
+                                    if (normalLength > 0.001) {
+                                        const nx = normal.x / normalLength;
+                                        const ny = normal.y / normalLength;
+                                        const nz = normal.z / normalLength;
+                                        const impulseX = nx * bounceForce;
+                                        const impulseY = ny * bounceForce;
+                                        const impulseZ = nz * bounceForce;
+                                        console.log('Spawnpoint collision: impulseX,Y,Z =', impulseX, impulseY, impulseZ);
+                                        if (!isNaN(impulseX) && !isNaN(impulseY) && !isNaN(impulseZ)) {
+                                            body.applyImpulse(
+                                                new CANNON.Vec3(impulseX, impulseY, impulseZ),
+                                                new CANNON.Vec3(0, 0, 0)
+                                            );
+                                        } else {
+                                            console.warn('Spawnpoint collision: skipping impulse due to NaN values');
+                                        }
+                                    } else {
+                                        console.warn('Spawnpoint collision: skipping impulse due to small normal length');
+                                    }
+                                } else {
+                                    console.warn('Spawnpoint collision: skipping impulse due to invalid normal');
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        console.warn('Error in spawnpoint collision response:', error);
+                    }
+                });
+
+                physicsWorld.addBody(body);
+            }
+        }
+        return;
+    }
+
+    // Create new SpawnPoint
+    const spawnInstance = new RobloxInstance('Part', 'SpawnPoint');
+    spawnInstance.Size = new THREE.Vector3(10, 0.5, 10);
+    spawnInstance.Position = new THREE.Vector3(0, 0.25, 0);
+    spawnInstance.Rotation = new THREE.Euler(0, 0, 0);
+    spawnInstance.Color = new THREE.Color(0.5, 0.5, 0.5);
+    spawnInstance.Anchored = true;
+    spawnInstance.CanCollide = true;
+
+    // Create 3D spawn platform using standard geometry with scale
+    const spawnGeometry = new THREE.BoxGeometry(4, 4, 4);
     const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
-
+    
+    // Create initial materials array with placeholder
     const materials = [
         sideMaterial, // right
         sideMaterial, // left
-        topMaterial,  // top
+        new THREE.MeshLambertMaterial({ color: 0x00ff00, name: 'SpawnTopPlaceholder' }),  // top (placeholder - green)
         sideMaterial, // bottom
         sideMaterial, // front
         sideMaterial  // back
     ];
 
     const spawn = new THREE.Mesh(spawnGeometry, materials);
-    spawn.position.y = 0.25;
+    spawn.position.copy(spawnInstance.Position);
+    spawn.scale.set(10/4, 0.5/4, 10/4); // Scale to match desired size
     spawn.receiveShadow = false;
-    spawnGroup.add(spawn);
+    spawn.castShadow = true;
+    scene.add(spawn);
 
-    scene.add(spawnGroup);
+    spawnInstance.threeObject = spawn;
+
+    // Load texture asynchronously with cache busting
+    loadTextureWithCacheBust('imgs/spawn.png', (texture) => {
+        console.log('[SPAWN] New spawn texture loaded successfully');
+        // Update materials array directly
+        materials[2] = new THREE.MeshLambertMaterial({ map: texture, name: 'SpawnTop' });
+        // Force Three.js to recognize the material change
+        spawn.material = [...materials];
+        spawn.material.needsUpdate = true;
+        console.log('[SPAWN] Applied texture to spawn top face');
+    }, (progress) => {
+        console.log('[SPAWN] Texture loading progress:', progress);
+    }, (error) => {
+        console.warn('[SPAWN] New spawn texture load failed, using fallback:', error);
+        // Keep the green placeholder
+    });
+
+    // Add to workspace
+    RobloxEnvironment.Workspace.Children.push(spawnInstance);
+    luaObjects['SpawnPoint'] = spawnInstance;
+
+    // Add physics collision for spawn point
+    if (physicsWorld) {
+        const shape = new CANNON.Box(new CANNON.Vec3(
+            spawnInstance.Size.x / 2,
+            spawnInstance.Size.y / 2,
+            spawnInstance.Size.z / 2
+        ));
+        const body = new CANNON.Body({
+            mass: 0,
+            shape: shape,
+            position: new CANNON.Vec3(
+                spawnInstance.Position.x,
+                spawnInstance.Position.y,
+                spawnInstance.Position.z
+            ),
+            material: partMaterial
+        });
+        body.userData = { mesh: spawn, instance: spawnInstance };
+        spawnInstance.cannonBody = body;
+
+        // Add collision event listener
+        body.addEventListener('collide', (e) => {
+            console.log('Spawnpoint collision detected', !!e.contact);
+            const otherBody = e.body;
+
+            // Trigger Touched event if the instance has a Touched connection
+            if (spawnInstance.touched && typeof spawnInstance.touched === 'function') {
+                spawnInstance.touched(otherBody.userData?.instance || otherBody);
+            }
+
+            // Apply Roblox-style collision response
+            try {
+                if (e.contact) {
+                    let impactVelocity = e.contact.getImpactVelocityAlongNormal();
+                    console.log('Spawnpoint collision: impactVelocity =', impactVelocity);
+                    if (isNaN(impactVelocity) || !isFinite(impactVelocity)) {
+                        console.warn('Spawnpoint collision: invalid impactVelocity, setting to 0');
+                        impactVelocity = 0;
+                    }
+                    impactVelocity = Math.max(0, Math.min(impactVelocity, 100)); // clamp to reasonable max
+                    if (impactVelocity > 5) {
+                        let bounceForce = impactVelocity * 0.1;
+                        bounceForce = Math.max(0, Math.min(bounceForce, 10)); // clamp bounce force
+                        const normal = e.contact.ni;
+                        console.log('Spawnpoint collision: normal =', normal);
+                        if (normal && !isNaN(normal.x) && !isNaN(normal.y) && !isNaN(normal.z)) {
+                            const normalLength = Math.sqrt(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z);
+                            console.log('Spawnpoint collision: normalLength =', normalLength);
+                            if (normalLength > 0.001) {
+                                const nx = normal.x / normalLength;
+                                const ny = normal.y / normalLength;
+                                const nz = normal.z / normalLength;
+                                const impulseX = nx * bounceForce;
+                                const impulseY = ny * bounceForce;
+                                const impulseZ = nz * bounceForce;
+                                console.log('Spawnpoint collision: impulseX,Y,Z =', impulseX, impulseY, impulseZ);
+                                if (!isNaN(impulseX) && !isNaN(impulseY) && !isNaN(impulseZ)) {
+                                    body.applyImpulse(
+                                        new CANNON.Vec3(impulseX, impulseY, impulseZ),
+                                        new CANNON.Vec3(0, 0, 0)
+                                    );
+                                } else {
+                                    console.warn('Spawnpoint collision: skipping impulse due to NaN values');
+                                }
+                            } else {
+                                console.warn('Spawnpoint collision: skipping impulse due to small normal length');
+                            }
+                        } else {
+                            console.warn('Spawnpoint collision: skipping impulse due to invalid normal');
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Error in spawnpoint collision response:', error);
+            }
+        });
+
+        physicsWorld.addBody(body);
+    }
 }
 
 function createSkybox() {
     const skyGeometry = new THREE.SphereGeometry(400, 32, 32);
     const textureLoader = new THREE.TextureLoader();
-    const skyTexture = textureLoader.load('1eprhbtmvoo51.png');
+    const skyTexture = textureLoader.load('imgs/1eprhbtmvoo51.png');
     skyTexture.wrapS = THREE.RepeatWrapping;
     skyTexture.wrapT = THREE.RepeatWrapping;
     skyTexture.repeat.set(1, 1);
@@ -2754,38 +3845,127 @@ async function loadStudioTestObjects() {
 
 async function loadPublishedGame(gameData) {
     console.log('Loading published game:', gameData.title);
-    await loadGameData(gameData, true);
+    await loadGameData(gameData, false);  // Load all scripts including Main Script for testing/play
 }
 
 async function loadGameData(data, isPublished = false) {
     console.log('Loading game data:', data);
+
+    // Resume audio context if suspended (user has already interacted with page)
+    if (audioListener && audioListener.context && audioListener.context.state === 'suspended') {
+        audioListener.context.resume().catch(e => console.warn('Could not resume audio context on game load:', e));
+    }
+
+    // === ENGINE VERSION CHECKING ===
+    const gameEngineVersion = data.engineVersion || 'unknown';
+    
+    // Log version info
+    console.log(`[VERSION] Loading game with engine version: ${gameEngineVersion}`);
+    console.log(`[VERSION] Current engine version: ${ENGINE_VERSION}`);
+    
+    // Check for legacy games (no version field) and apply compatibility
+    if (!data.engineVersion) {
+        console.warn(`[VERSION] Legacy game detected (no engine version field). Applying compatibility defaults.`);
+        data = applyLegacyDefaults(data);
+        logLegacyGameWarnings(data);
+    } else if (isVersionOlder(data.engineVersion, ENGINE_VERSION)) {
+        console.warn(`[VERSION] Game from older engine (${data.engineVersion} < ${ENGINE_VERSION}). Applying compatibility layer.`);
+        data = applyVersionCompatibility(data, data.engineVersion, ENGINE_VERSION);
+        logLegacyGameWarnings(data);
+    } else if (data.engineVersion === ENGINE_VERSION) {
+        console.log(`[VERSION] Game is from current engine version - no compatibility adjustments needed.`);
+    } else if (isVersionOlder(ENGINE_VERSION, data.engineVersion)) {
+        console.warn(`[VERSION] Game was created with newer engine version (${data.engineVersion}). Some features may not work.`);
+    }
+
+    // === ASSET CACHE BUSTING ===
+    const cacheBustParam = getCacheBustParam();
+    console.log(`[VERSION] Asset cache busting enabled: ${cacheBustParam}`);
+
     // Load manual objects (parts, etc.) first so scripts can reference them
     if (data.objects) {
         console.log('Found objects:', data.objects);
-        Object.values(data.objects).forEach(objData => {
+
+        // Sort objects so parents are created before children
+        const sortedObjects = Object.values(data.objects).sort((a, b) => {
+            if (!a.Parent || a.Parent === 'Workspace') return -1;
+            if (!b.Parent || b.Parent === 'Workspace') return 1;
+            return 0; // Same level, order doesn't matter
+        });
+
+        sortedObjects.forEach(objData => {
             console.log('Processing object:', objData);
             if (objData.ClassName === 'Part') {
                 console.log('Creating part:', objData.Name);
-                const geometry = new THREE.BoxGeometry(
-                    objData.Size[0],
-                    objData.Size[1],
-                    objData.Size[2]
-                );
-                const material = new THREE.MeshLambertMaterial({
-                    color: new THREE.Color(objData.Color[0], objData.Color[1], objData.Color[2])
-                });
-                const part = new THREE.Mesh(geometry, material);
+                const geometry = new THREE.BoxGeometry(1, 1, 1);
+                
+                // Check if this is a SpawnPoint
+                const isSpawnPoint = objData.Name === 'SpawnPoint';
+                
+                // Create materials array for multi-material support (SpawnPoint needs special texture)
+                let materials;
+                if (isSpawnPoint) {
+                    // For SpawnPoint, create multi-material with placeholder for top
+                    const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+                    materials = [
+                        sideMaterial, // right
+                        sideMaterial, // left
+                        new THREE.MeshLambertMaterial({ color: 0x00ff00, name: 'SpawnTopPlaceholder' }),  // top (placeholder - green)
+                        sideMaterial, // bottom
+                        sideMaterial, // front
+                        sideMaterial  // back
+                    ];
+                } else {
+                    // Regular part with single material
+                    materials = new THREE.MeshLambertMaterial({
+                        color: new THREE.Color(objData.Color[0], objData.Color[1], objData.Color[2])
+                    });
+                }
+                
+                const part = new THREE.Mesh(geometry, materials);
                 part.position.set(objData.Position[0], objData.Position[1], objData.Position[2]);
                 if (objData.Rotation) {
                     part.rotation.set(objData.Rotation[0], objData.Rotation[1], objData.Rotation[2]);
                 }
+                part.scale.set(objData.Size[0], objData.Size[1], objData.Size[2]);
                 part.castShadow = true;
                 part.receiveShadow = true;
                 scene.add(part);
                 console.log('Part added to scene at position:', part.position.toArray());
 
+                // Apply spawn texture for SpawnPoint
+                if (isSpawnPoint) {
+                    console.log('[SPAWN] Applying spawn texture to loaded SpawnPoint');
+                    loadTextureWithCacheBust('imgs/spawn.png',
+                        (texture) => {
+                            console.log('[SPAWN] Texture loaded for loaded SpawnPoint');
+                            // Update top material with texture
+                            if (Array.isArray(part.material)) {
+                                part.material[2] = new THREE.MeshLambertMaterial({ map: texture, name: 'SpawnTop' });
+                                part.material = [...part.material];
+                            } else {
+                                part.material = new THREE.MeshLambertMaterial({ map: texture, name: 'SpawnTop' });
+                            }
+                            part.material.needsUpdate = true;
+                        },
+                        (progress) => {
+                            console.log('[SPAWN] Texture loading progress for loaded SpawnPoint:', progress);
+                        },
+                        (error) => {
+                            console.warn('[SPAWN] Texture load failed for loaded SpawnPoint:', error);
+                            // Keep the green placeholder
+                        }
+                    );
+                }
+
                 // Create Roblox instance for the part
-                const robloxPart = new RobloxInstance('Part', objData.Name);
+                // Special case: if this is "part_2" and there's a script that expects "part_1", rename it
+                let partName = objData.Name;
+                if (objData.Name === 'part_2' && Object.values(data.objects).some(obj => obj.ClassName === 'Script' && obj.Source && obj.Source.includes('script.part_1'))) {
+                    partName = 'part_1';
+                    console.log('Renaming part_2 to part_1 for script compatibility');
+                }
+                const robloxPart = new RobloxInstance('Part', partName);
                 robloxPart.threeObject = part;
                 robloxPart.Position = part.position.clone();
                 robloxPart.Size = new THREE.Vector3(objData.Size[0], objData.Size[1], objData.Size[2]);
@@ -2796,11 +3976,46 @@ async function loadGameData(data, isPublished = false) {
 
                 // Apply transparency
                 if (robloxPart.Transparency > 0) {
-                    part.material.transparent = true;
-                    part.material.opacity = 1 - robloxPart.Transparency;
+                    if (Array.isArray(part.material)) {
+                        // Multi-material (SpawnPoint)
+                        part.material.forEach(mat => {
+                            mat.transparent = true;
+                            mat.opacity = 1 - robloxPart.Transparency;
+                        });
+                    } else {
+                        part.material.transparent = true;
+                        part.material.opacity = 1 - robloxPart.Transparency;
+                    }
+                } else {
+                    if (Array.isArray(part.material)) {
+                        // Multi-material (SpawnPoint)
+                        part.material.forEach(mat => {
+                            mat.transparent = false;
+                            mat.opacity = 1;
+                        });
+                    } else {
+                        part.material.transparent = false;
+                        part.material.opacity = 1;
+                    }
                 }
 
-                luaObjects[objData.Name] = robloxPart;
+                // Set parent based on saved data, or special case for part_1 -> script_1
+                let parentObj = RobloxEnvironment.Workspace;
+                if (objData.Parent && objData.Parent !== 'Workspace') {
+                    parentObj = luaObjects[objData.Parent] || RobloxEnvironment.Workspace;
+                } else if (partName === 'part_1' && luaObjects['script_1']) {
+                    // Special case: parent part_1 to script_1 for the test
+                    parentObj = luaObjects['script_1'];
+                    console.log('Parenting part_1 to script_1');
+                }
+
+                robloxPart.Parent = parentObj;
+                parentObj.Children.push(robloxPart);
+
+                // Add as direct property to workspace for easy access like workspace.part_1
+                RobloxEnvironment.Workspace[partName] = robloxPart;
+
+                luaObjects[partName] = robloxPart;
 
                 // Add physics if canCollide
                 if (robloxPart.CanCollide && physicsWorld) {
@@ -2818,39 +4033,122 @@ async function loadGameData(data, isPublished = false) {
                         ),
                         shape: shape,
                         material: partMaterial,
+                        linearDamping: ROBLOX_LINEAR_DAMPING,
+                        angularDamping: ROBLOX_ANGULAR_DAMPING,
                         collisionFilterGroup: 1, // Dynamic parts group
                         collisionFilterMask: -1 // Collide with all
                     });
                     body.userData = { mesh: part, instance: robloxPart };
 
-                    // Add collision event listener
+                    // Add collision event listener for Touched events only (no extra bounce)
                     body.addEventListener('collide', (e) => {
                         const otherBody = e.body;
-                        const contact = e.contact;
 
                         // Trigger Touched event if the instance has a Touched connection
                         if (robloxPart.touched && typeof robloxPart.touched === 'function') {
                             robloxPart.touched(otherBody.userData?.instance || otherBody);
-                        }
-
-                        // Apply Roblox-style collision response
-                        if (contact.getImpactVelocityAlongNormal() > 5) {
-                            const bounceForce = contact.getImpactVelocityAlongNormal() * 0.5;
-                            const normal = contact.ni;
-                            body.applyImpulse(
-                                new CANNON.Vec3(
-                                    normal.x * bounceForce,
-                                    normal.y * bounceForce,
-                                    normal.z * bounceForce
-                                ),
-                                new CANNON.Vec3(0, 0, 0)
-                            );
                         }
                     });
 
                     physicsWorld.addBody(body);
                     robloxPart.cannonBody = body;
                 }
+
+                // Emit partCreated to server for syncing
+                if (socket && socket.connected) {
+                    socket.emit('partCreated', {
+                        name: objData.Name,
+                        size: objData.Size,
+                        position: objData.Position,
+                        rotation: objData.Rotation,
+                        color: objData.Color,
+                        canCollide: objData.CanCollide,
+                        anchored: objData.Anchored
+                    });
+                }
+            } else if (objData.ClassName === 'Sound') {
+                console.log('Creating sound:', objData.Name);
+
+                // Create Roblox instance for the sound
+                const robloxSound = new RobloxInstance('Sound', objData.Name);
+                robloxSound.SoundId = objData.soundId || objData.SoundId || '';
+                robloxSound.Volume = objData.volume || objData.Volume || 0.5;
+                robloxSound.Looping = objData.looping || objData.Looping || false;
+                robloxSound.isPlaying = false;
+
+                // Store sound URL for later - don't create Audio element until user interaction
+                if (robloxSound.SoundId) {
+                    robloxSound.soundUrl = robloxSound.SoundId.startsWith('http') ? robloxSound.SoundId :
+                                          robloxSound.SoundId.startsWith('rbxassetid://') ? robloxSound.SoundId.replace('rbxassetid://', '') :
+                                          robloxSound.SoundId;
+
+                    console.log('Sound URL stored for', objData.Name, ':', robloxSound.soundUrl);
+
+                    // Keep THREE.Audio as backup (load it now since it might work)
+                    if (audioListener) {
+                        robloxSound.audio = new THREE.Audio(audioListener);
+                        const audioLoader = new THREE.AudioLoader();
+
+                        audioLoader.load(robloxSound.soundUrl, (buffer) => {
+                            robloxSound.audio.setBuffer(buffer);
+                            robloxSound.audio.setVolume(robloxSound.Volume);
+                            robloxSound.audio.setLoop(robloxSound.Looping || false);
+                            console.log('THREE.Audio loaded:', objData.Name, 'from', robloxSound.soundUrl, 'looping:', robloxSound.Looping);
+                        }, (progress) => {
+                            console.log('THREE.Audio loading progress:', objData.Name, progress);
+                        }, (error) => {
+                            console.warn('Failed to load THREE.Audio:', objData.Name, error);
+                        });
+                    }
+                }
+
+                // Add to workspace so scripts can access it
+                robloxSound.Parent = RobloxEnvironment.Workspace;
+                RobloxEnvironment.Workspace.Children.push(robloxSound);
+
+                // Add as direct property for easy access like workspace.sound_1
+                RobloxEnvironment.Workspace[objData.Name] = robloxSound;
+
+                luaObjects[objData.Name] = robloxSound;
+            } else if (objData.ClassName === 'Script') {
+                console.log('Creating script:', objData.Name);
+
+                // Create Roblox instance for the script
+                const robloxScript = new RobloxInstance('Script', objData.Name);
+                robloxScript.Source = objData.Source || '';
+
+                // Set parent based on saved data, default to workspace
+                let parentObj = RobloxEnvironment.Workspace;
+                if (objData.Parent && objData.Parent !== 'Workspace') {
+                    parentObj = luaObjects[objData.Parent] || RobloxEnvironment.Workspace;
+                }
+
+                robloxScript.Parent = parentObj;
+                parentObj.Children.push(robloxScript);
+
+                // Add as direct property to workspace for easy access like workspace.script_1
+                RobloxEnvironment.Workspace[objData.Name] = robloxScript;
+
+                luaObjects[objData.Name] = robloxScript;
+            } else if (objData.ClassName === 'Folder') {
+                console.log('Creating folder:', objData.Name);
+
+                // Create Roblox instance for the folder
+                const robloxFolder = new RobloxInstance('Folder', objData.Name);
+
+                // Set parent based on saved data, default to workspace
+                let parentObj = RobloxEnvironment.Workspace;
+                if (objData.Parent && objData.Parent !== 'Workspace') {
+                    parentObj = luaObjects[objData.Parent] || RobloxEnvironment.Workspace;
+                }
+
+                robloxFolder.Parent = parentObj;
+                parentObj.Children.push(robloxFolder);
+
+                // Add as direct property to workspace for easy access like workspace.folder_1
+                RobloxEnvironment.Workspace[objData.Name] = robloxFolder;
+
+                luaObjects[objData.Name] = robloxFolder;
             }
         });
     }
@@ -2858,9 +4156,9 @@ async function loadGameData(data, isPublished = false) {
     // Load and execute scripts after objects are loaded
     if (data.scripts) {
         for (const [scriptName, scriptData] of Object.entries(data.scripts)) {
-            // Skip 'Main Script' for published games to prevent duplicate objects and unintended execution
-            if (isPublished && scriptName === 'Main Script') {
-                console.log('Skipping Main Script for published game');
+            // Skip 'Main Script' as it is intended for studio use only and should not run during game testing or playback
+            if (scriptName === 'Main Script') {
+                console.log('Skipping Main Script for game runtime');
                 continue;
             }
 
@@ -2868,30 +4166,146 @@ async function loadGameData(data, isPublished = false) {
                 // Handle case where scriptData is just the source string
                 const source = scriptData;
                 try {
-                    console.log('Executing script:', scriptName);
+                    console.log('RoGold Game: Executing script:', scriptName, 'with source length:', source.length);
                     const actions = interpretLuaScript(source);
-                    console.log('Parsed actions for script:', scriptName, actions);
-                    await executeLuaActions(actions);
-                    console.log('Successfully executed script:', scriptName);
+                    console.log('RoGold Game: Parsed actions for script:', scriptName, actions);
+                    // Get the script object for script.ChildName access
+                    const scriptObj = luaObjects[scriptName];
+                    const initialVars = { workspace: RobloxEnvironment.Workspace, game: window.game };
+                    if (scriptObj) initialVars.script = scriptObj;
+                    await executeLuaActions(actions, initialVars);
+                    console.log('RoGold Game: Successfully executed script:', scriptName);
                 } catch (error) {
-                    console.error('Failed to execute script:', scriptName, error);
+                    console.error('RoGold Game: Failed to execute script:', scriptName, error);
                 }
             } else if (scriptData.source) {
                 // Handle case where scriptData is an object with source property
                 try {
-                    console.log('Executing script:', scriptName);
+                    console.log('RoGold Game: Executing script:', scriptName, 'with source length:', scriptData.source.length);
                     const actions = interpretLuaScript(scriptData.source);
-                    console.log('Parsed actions for script:', scriptName, actions);
-                    await executeLuaActions(actions);
-                    console.log('Successfully executed script:', scriptName);
+                    console.log('RoGold Game: Parsed actions for script:', scriptName, actions);
+                    // Get the script object for script.ChildName access
+                    const scriptObj = luaObjects[scriptName];
+                    const initialVars = { workspace: RobloxEnvironment.Workspace, game: window.game };
+                    if (scriptObj) initialVars.script = scriptObj;
+                    await executeLuaActions(actions, initialVars);
+                    console.log('RoGold Game: Successfully executed script:', scriptName);
                 } catch (error) {
-                    console.error('Failed to execute script:', scriptName, error);
+                    console.error('RoGold Game: Failed to execute script:', scriptName, error);
                 }
             }
         }
     }
 
     console.log('Loaded game objects and scripts');
+    
+    // Create/update SpawnPoint after game objects are loaded
+    // This ensures we pick up any SpawnPoint from the loaded game data
+    createSpawnPoint();
+    
+    // Enable part drag & sync handlers when objects loaded
+    try { setupPartDragSync(); } catch (e) { console.warn('setupPartDragSync failed', e); }
+}
+
+// Click-and-drag part movement with server sync
+function setupPartDragSync() {
+    if (!renderer || !camera) return;
+
+    let dragging = false;
+    let selectedInstance = null;
+    let selectedName = null;
+    let dragOffset = new THREE.Vector3();
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const intersectPoint = new THREE.Vector3();
+    let lastEmit = 0;
+    const emitInterval = 50; // ms
+
+    function getMouseEventPos(evt) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        const x = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((evt.clientY - rect.top) / rect.height) * 2 + 1;
+        return { x, y };
+    }
+
+    function onPointerDown(evt) {
+        if (isChatInputFocused() || isMenuOpen) return;
+        const p = getMouseEventPos(evt);
+        mouse.x = p.x; mouse.y = p.y;
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(Object.values(luaObjects).map(i => i.threeObject).filter(Boolean), true);
+        if (intersects.length === 0) return;
+        const hit = intersects[0];
+        // Find the RobloxInstance owning this mesh
+        const owner = Object.values(luaObjects).find(i => i.threeObject === hit.object || i.threeObject === hit.object.parent || (i.threeObject && i.threeObject.children && i.threeObject.children.includes(hit.object)));
+        if (!owner) return;
+        // Start dragging only non-anchored parts
+        if (owner.Anchored) return;
+        dragging = true;
+        selectedInstance = owner;
+        selectedName = owner.Name;
+        // compute plane at current Y
+        const y = owner.threeObject.position.y;
+        plane.set(new THREE.Vector3(0, 1, 0), -y);
+        // compute offset from intersection point to object origin
+        if (raycaster.ray.intersectPlane(plane, intersectPoint)) {
+            dragOffset.copy(intersectPoint).sub(owner.threeObject.position);
+        } else {
+            dragOffset.set(0,0,0);
+        }
+
+        evt.preventDefault();
+    }
+
+    function onPointerMove(evt) {
+        if (!dragging || !selectedInstance) return;
+        const p = getMouseEventPos(evt);
+        mouse.x = p.x; mouse.y = p.y;
+        raycaster.setFromCamera(mouse, camera);
+        if (raycaster.ray.intersectPlane(plane, intersectPoint)) {
+            const target = intersectPoint.clone().sub(dragOffset);
+            // Snap small values to avoid jitter
+            selectedInstance.threeObject.position.copy(target);
+            selectedInstance.Position = selectedInstance.threeObject.position.clone();
+            if (selectedInstance.cannonBody) {
+                try {
+                    selectedInstance.cannonBody.position.set(target.x, target.y, target.z);
+                    selectedInstance.cannonBody.velocity.set(0,0,0);
+                } catch (e) {}
+            }
+
+            const now = Date.now();
+            if (socket && socket.connected && now - lastEmit > emitInterval) {
+                lastEmit = now;
+                socket.emit('partMoved', {
+                    name: selectedName,
+                    position: { x: target.x, y: target.y, z: target.z },
+                    rotation: { x: selectedInstance.threeObject.rotation.x, y: selectedInstance.threeObject.rotation.y, z: selectedInstance.threeObject.rotation.z }
+                });
+            }
+        }
+        evt.preventDefault();
+    }
+
+    function onPointerUp(evt) {
+        if (!dragging || !selectedInstance) return;
+        // Send final position
+        const pos = selectedInstance.threeObject.position;
+        socket && socket.connected && socket.emit('partMoved', {
+            name: selectedName,
+            position: { x: pos.x, y: pos.y, z: pos.z },
+            rotation: { x: selectedInstance.threeObject.rotation.x, y: selectedInstance.threeObject.rotation.y, z: selectedInstance.threeObject.rotation.z }
+        });
+
+        dragging = false;
+        selectedInstance = null;
+        selectedName = null;
+        evt.preventDefault();
+    }
+
+    // Use pointer events for broad device support
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
 }
 
 function emitColorChange() {
@@ -2938,6 +4352,11 @@ function initUI() {
     const legColorInput = document.getElementById('leg-color');
     const respawnBtn = document.getElementById('respawn-btn');
     const controlsModeBtn = document.getElementById('controls-mode-btn');
+    const backpackBtn = document.getElementById('backpack-btn');
+    backpackModal = document.getElementById('backpack-modal');
+    const closeBackpackBtn = document.getElementById('close-backpack-btn');
+    const backpackSearch = document.getElementById('backpack-search');
+    const backpackItems = document.getElementById('backpack-items');
 
     const zoomInBtn = document.getElementById('zoom-in-btn');
     const zoomOutBtn = document.getElementById('zoom-out-btn');
@@ -2971,9 +4390,28 @@ function initUI() {
             controlOverride = 'mobile';
         }
         localStorage.setItem('controlOverride', controlOverride);
-        
         updateControls();
     });
+
+    backpackBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        playClickSound();
+        backpackModal.style.display = 'block';
+        updateBackpackItems();
+    });
+
+    closeBackpackBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        playClickSound();
+        backpackModal.style.display = 'none';
+        backpackToolBtn.classList.remove('open');
+    });
+
+    backpackSearch.addEventListener('input', (event) => {
+        updateBackpackItems(event.target.value);
+    });
+
+    updateControls();
 
     document.querySelectorAll('.potion-option').forEach(option => {
         option.addEventListener('click', (event) => {
@@ -3059,8 +4497,20 @@ function initUI() {
         }
     });
 
+    // Listen for gear purchases from catalog (index.js)
+    window.addEventListener('rogold_gear_purchased', (event) => {
+        const { gearId } = event.detail;
+        if (gearId === 'gear_rocket_launcher' && areGearsAllowed()) {
+            const equipBtn = document.getElementById('equip-tool-btn');
+            if (equipBtn) equipBtn.style.display = 'block';
+            if (backpackToolBtn) backpackToolBtn.style.display = 'block';
+            // Update backpack to show the new item
+            updateBackpackItems();
+        }
+    });
+
     // For testing: unlock Epic face (remove this in production)
-    // unlockFace('epicface.png');
+    // unlockFace('imgs/epicface.png');
 
     zoomInBtn.addEventListener('mousedown', () => {
         zoomCameraIn = true;
@@ -3134,23 +4584,28 @@ function initMobileControls() {
     const rotateRightBtn = document.getElementById('mobile-rotate-right');
 
     const handleJump = () => {
-        if (canJump === true) {
+        if (canJump === true && player.userData.body && player.userData.body.velocity.y >= -10 && performance.now() - lastJumpTime > jumpCooldown) {
             if (player.userData.body) {
-                // Reset vertical velocity and clear most horizontal momentum before jumping
+                // Reset vertical velocity only, preserve horizontal momentum
                 player.userData.body.velocity.y = 0;
-                player.userData.body.velocity.x = 0;
-                player.userData.body.velocity.z = 0;
                 // Apply upward impulse
                 player.userData.body.applyImpulse(new CANNON.Vec3(0, JUMP_IMPULSE, 0), CANNON.Vec3.ZERO);
             }
             canJump = false;
+            hasJumpedThisCycle = true;
+            lastJumpTime = performance.now();
             if (jumpSound && jumpSound.buffer) {
                 if (jumpSound.isPlaying) jumpSound.stop();
                 jumpSound.play();
             }
         }
     };
-    jumpBtn.addEventListener('touchstart', (e) => { e.preventDefault(); handleJump(); });
+    jumpBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (performance.now() - lastJumpTime > jumpCooldown) {
+            handleJump();
+        }
+    });
 
     rotateLeftBtn.addEventListener('touchstart', (e) => { e.preventDefault(); rotateCameraLeft = true; });
     rotateLeftBtn.addEventListener('touchend', (e) => { e.preventDefault(); rotateCameraLeft = false; });
@@ -3162,6 +4617,7 @@ function initMobileControls() {
 }
 
 function respawnPlayer() {
+    console.log('respawnPlayer called for local player');
     if (isRespawning) return;
     isRespawning = true;
 
@@ -3169,6 +4625,12 @@ function respawnPlayer() {
     playerHealth = 0;
     document.getElementById('health-text').textContent = '0';
     document.getElementById('health-fill').style.width = '0%';
+
+    // Reset jump state on respawn
+    canJump = false;
+    canJumpFromGround = false;
+    hasJumpedThisCycle = false;
+    lastJumpTime = 0;
 
     player.visible = false;
     if (walkSound && walkSound.isPlaying) {
@@ -3182,6 +4644,106 @@ function respawnPlayer() {
         player.rightArm.children[0],
         player.leftLeg.children[0],
         player.rightLeg.children[0],
+    ];
+
+    console.log('Creating fallenParts for local player, count:', partsToBreak.length);
+    partsToBreak.forEach(part => {
+        if (!part) return;
+
+        const worldPos = new THREE.Vector3();
+        part.getWorldPosition(worldPos);
+
+        const worldQuat = new THREE.Quaternion();
+        part.getWorldQuaternion(worldQuat);
+
+        const fallenPartMesh = part.clone();
+        fallenPartMesh.position.copy(worldPos);
+        fallenPartMesh.quaternion.copy(worldQuat);
+        fallenPartMesh.castShadow = false;
+        fallenPartMesh.receiveShadow = false;
+        scene.add(fallenPartMesh);
+
+        // Add velocity and angular velocity for falling animation
+        fallenPartMesh.userData.velocity = new THREE.Vector3(
+            (Math.random() - 0.5) * 15, // random x velocity
+            Math.random() * 5 + 10, // upward y velocity
+            (Math.random() - 0.5) * 15  // random z velocity
+        );
+        fallenPartMesh.userData.angularVelocity = new THREE.Vector3(
+            (Math.random() - 0.5) * 10,
+            (Math.random() - 0.5) * 10,
+            (Math.random() - 0.5) * 10
+        );
+
+        fallenParts.push({ mesh: fallenPartMesh });
+    });
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+
+    setTimeout(() => {
+        fallenParts = fallenParts.filter(part => {
+            if (part.mesh && part.mesh.parent) {
+                scene.remove(part.mesh);
+                // Do not dispose geometry/material as they are shared with the original player
+                return false; // remove from list
+            }
+            return true; // keep if not removed
+        });
+
+        // Get spawn position from SpawnPoint object
+        let spawnPos = new THREE.Vector3(0, 3, 0); // default
+        if (luaObjects['SpawnPoint']) {
+            spawnPos.copy(luaObjects['SpawnPoint'].Position);
+            spawnPos.y += 2.75; // Add offset for player height (3 - 0.25)
+        }
+
+        if (player.userData.body) {
+            player.userData.body.position.set(spawnPos.x, spawnPos.y - 0.65, spawnPos.z);
+            player.userData.body.velocity.set(0, 0, 0);
+            // Set visual position to match body + offset
+            player.position.copy(spawnPos);
+        }
+        player.visible = true;
+
+        // Update health to 100 when respawning
+        playerHealth = 100;
+        document.getElementById('health-text').textContent = '100';
+        document.getElementById('health-fill').style.width = '100%';
+
+        // Notify server of respawn to reset health
+        if (socket && socket.connected) {
+            socket.emit('respawn');
+        }
+
+        if (spawnSound && !spawnSound.isPlaying) {
+            spawnSound.play();
+        }
+
+        isRespawning = false;
+    }, 3000);
+
+    if (currentDeathSound && currentDeathSound.buffer) {
+        if (currentDeathSound.isPlaying) currentDeathSound.stop();
+        currentDeathSound.play();
+    }
+}
+
+function spawnRagdollForPlayer(victimId) {
+    const remotePlayer = otherPlayers[victimId];
+    if (!remotePlayer) return;
+
+    // Hide the player
+    remotePlayer.visible = false;
+
+    const partsToBreak = [
+        remotePlayer.getObjectByName("Torso"),
+        remotePlayer.getObjectByName("Head"),
+        remotePlayer.leftArm.children[0],
+        remotePlayer.rightArm.children[0],
+        remotePlayer.leftLeg.children[0],
+        remotePlayer.rightLeg.children[0],
     ];
 
     partsToBreak.forEach(part => {
@@ -3200,82 +4762,32 @@ function respawnPlayer() {
         fallenPartMesh.receiveShadow = false;
         scene.add(fallenPartMesh);
 
-        // Create physics body
-        const partSize = new THREE.Vector3();
-        new THREE.Box3().setFromObject(part).getSize(partSize);
-
-        const shape = new CANNON.Box(new CANNON.Vec3(partSize.x / 2, partSize.y / 2, partSize.z / 2));
-        const body = new CANNON.Body({
-            mass: 1,
-            position: new CANNON.Vec3(worldPos.x, worldPos.y, worldPos.z),
-            quaternion: new CANNON.Quaternion(worldQuat.x, worldQuat.y, worldQuat.z, worldQuat.w),
-            shape: shape,
-            material: partMaterial,
-            angularDamping: 0.5, // helps stop rolling
-            linearDamping: 0.1,
-            collisionFilterGroup: 1, // Dynamic parts group
-            collisionFilterMask: -1 // Collide with all
-        });
-
-        // Apply explosion-like impulse
-        const impulse = new CANNON.Vec3(
-             (Math.random() - 0.5) * 40,
-             Math.random() * 30 + 10,
-             (Math.random() - 0.5) * 40
+        fallenPartMesh.userData.velocity = new THREE.Vector3(
+            (Math.random() - 0.5) * 15,
+            Math.random() * 5 + 10,
+            (Math.random() - 0.5) * 15
         );
-        body.applyImpulse(impulse, CANNON.Vec3.ZERO);
+        fallenPartMesh.userData.angularVelocity = new THREE.Vector3(
+            (Math.random() - 0.5) * 10,
+            (Math.random() - 0.5) * 10,
+            (Math.random() - 0.5) * 10
+        );
 
-        // Set collision filtering for fallen parts
-        body.collisionFilterGroup = 1; // Dynamic parts group
-        body.collisionFilterMask = -1; // Collide with all
-
-        physicsWorld.addBody(body);
-        
-        fallenParts.push({ mesh: fallenPartMesh, body: body });
+        fallenParts.push({ mesh: fallenPartMesh });
     });
 
-    const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2();
-
-
+    // After 3 seconds, remove fallen parts and show player again
     setTimeout(() => {
-        fallenParts.forEach(part => {
-            scene.remove(part.mesh);
-            physicsWorld.removeBody(part.body);
-             // Properly dispose of geometries and materials to free up memory
-            if (part.mesh.geometry) part.mesh.geometry.dispose();
-            if (Array.isArray(part.mesh.material)) {
-                part.mesh.material.forEach(m => m.dispose());
-            } else if (part.mesh.material) {
-                part.mesh.material.dispose();
+        fallenParts = fallenParts.filter(part => {
+            if (part.mesh && part.mesh.parent) {
+                scene.remove(part.mesh);
+                // Do not dispose geometry/material as they are shared with the original player
+                return false;
             }
+            return true;
         });
-        fallenParts = [];
-
-        player.position.set(0, -2
-            , 0);
-        if (player.userData.body) {
-            player.userData.body.position.set(0, 3, 0);
-            player.userData.body.velocity.set(0, 0, 0);
-        }
-        player.visible = true;
-
-        // Update health to 100 when respawning
-        playerHealth = 100;
-        document.getElementById('health-text').textContent = '100';
-        document.getElementById('health-fill').style.width = '100%';
-        
-        if (spawnSound && !spawnSound.isPlaying) {
-            spawnSound.play();
-        }
-
-        isRespawning = false;
+        remotePlayer.visible = true;
     }, 3000);
-
-    if (currentDeathSound && currentDeathSound.buffer) {
-        if (currentDeathSound.isPlaying) currentDeathSound.stop();
-        currentDeathSound.play();
-    }
 }
 
 function onWindowResize() {
@@ -3321,6 +4833,14 @@ function onKeyDown(event) {
         stopDance();
     }
     switch (event.code) {
+        case 'Slash':
+            // Focus chat input when pressing "/"
+            const chatInput = document.getElementById('chat-input');
+            if (chatInput) {
+                chatInput.focus();
+                event.preventDefault(); // Prevent typing "/" in the input
+            }
+            break;
         case 'ArrowUp':
         case 'KeyW':
             moveForward = true;
@@ -3350,16 +4870,16 @@ function onKeyDown(event) {
             }
             break;
         case 'Space':
-            if (canJump === true) {
+            if (canJump === true && player.userData.body && player.userData.body.velocity.y >= -10 && performance.now() - lastJumpTime > jumpCooldown) {
                 if (player.userData.body) {
-                    // Reset vertical velocity and clear most horizontal momentum before jumping
+                    // Reset vertical velocity only, preserve horizontal momentum
                     player.userData.body.velocity.y = 0;
-                    player.userData.body.velocity.x = 0;
-                    player.userData.body.velocity.z = 0;
                     // Apply upward impulse
                     player.userData.body.applyImpulse(new CANNON.Vec3(0, JUMP_IMPULSE, 0), CANNON.Vec3.ZERO);
                 }
                 canJump = false;
+                hasJumpedThisCycle = true;
+                lastJumpTime = performance.now();
                 if (jumpSound && jumpSound.buffer) {
                     if (jumpSound.isPlaying) jumpSound.stop();
                     jumpSound.play();
@@ -3429,14 +4949,28 @@ function startDance() {
 function stopDance() {
     if (!isDancing) return;
     isDancing = false;
+    // Reset dance rotations
+    const torso = player.getObjectByName("Torso");
+    const head = player.getObjectByName("Head");
+    torso.rotation.y = 0;
+    torso.rotation.z = 0;
+    player.rightArm.rotation.y = 0;
+    player.rightArm.rotation.z = 0;
+    player.leftArm.rotation.y = 0;
+    player.leftArm.rotation.z = 0;
+    head.rotation.y = 0;
+    player.rightLeg.rotation.x = 0;
+    player.rightLeg.rotation.z = 0;
+    player.leftLeg.rotation.x = 0;
+    player.leftLeg.rotation.z = 0;
     if (danceMusic && danceMusic.isPlaying) {
         danceMusic.stop();
     }
     if (socket && socket.connected) {
         socket.emit('stopDance');
     }
-    if (danceSound && danceSound.isPlaying) {
-        danceSound.stop();
+    if (player.userData.danceSound && player.userData.danceSound.isPlaying) {
+        player.userData.danceSound.stop();
     }
 }
 
@@ -3444,7 +4978,7 @@ function playDanceSoundAt(playerObject) {
     const sound = new THREE.PositionalAudio(audioListener);
 
     const audioLoader = new THREE.AudioLoader();
-    audioLoader.load('dance.mp3', buffer => {
+    audioLoader.load('mash.mp3', buffer => {
         sound.setBuffer(buffer);
         sound.setRefDistance(10);   // distância onde o som toca no volume original
         sound.setMaxDistance(50);   // distância máxima que ainda é audível
@@ -3454,6 +4988,7 @@ function playDanceSoundAt(playerObject) {
     });
 
     playerObject.add(sound); // O som segue o player
+    playerObject.userData.danceSound = sound; // Store reference to stop later
 }
 
 function startLoadingScreen() {
@@ -3485,11 +5020,19 @@ let isUnequipping = false;
 let equipAnimProgress = 0;
 let unequipAnimProgress = 0;
 const equipAnimDuration = 0.25; // seconds
-let equipTargetRotation = -Math.PI / 2;
+let equipTargetRotation = -Math.PI / 1.8;
 
 // Equip function: attaches to right arm pivot, at the top (like a hand)
 function equipRocketLauncher() {
     if (!rocketLauncherModel || isEquipping || equippedTool === 'rocketLauncher') return;
+    if (!ownedGears.includes('gear_rocket_launcher')) {
+        alert('Você precisa comprar o Lançador de Foguetes no catálogo primeiro!');
+        return;
+    }
+    if (!areGearsAllowed()) {
+        alert('Ferramentas estão desabilitadas neste jogo!');
+        return;
+    }
     isEquipping = true;
     equipAnimProgress = 0;
 
@@ -3535,8 +5078,19 @@ function launchRocket() {
     }
 }
 
+function equipTool(toolName) {
+    if (toolName === 'Rocket Launcher') {
+        if (socket && socket.connected) {
+            socket.emit("equipTool", { tool: "rocketLauncher" });
+        }
+        document.getElementById('equip-tool-btn').classList.add('equipped');
+    }
+    // Add other tools
+}
+
 function unequipTool() {
     if (!rocketLauncherModel || equippedTool !== 'rocketLauncher') return;
+    document.getElementById('equip-tool-btn').classList.remove('equipped');
     if (rocketLauncherModel.parent) rocketLauncherModel.parent.remove(rocketLauncherModel);
     scene.add(rocketLauncherModel);
     rocketLauncherModel.visible = false;
@@ -3550,6 +5104,32 @@ function unequipTool() {
 }
 // Button and keyboard events
 window.addEventListener('DOMContentLoaded', () => {
+    // Create backpack button above toolbox
+    backpackToolBtn = document.createElement('button');
+    backpackToolBtn.id = 'backpack-tool-btn';
+    backpackToolBtn.className = 'toolbox';
+    backpackToolBtn.style.bottom = '90px';
+    backpackToolBtn.style.width = '50px';
+    backpackToolBtn.style.height = '40px';
+    backpackToolBtn.innerHTML = '<img src="imgs/rgld_up.png" alt="backpack" style="width:100%; height:100%; object-fit:cover;">';
+    document.body.appendChild(backpackToolBtn);
+    // Hide if rocket launcher not owned or gears not allowed
+    if (!ownedGears.includes('gear_rocket_launcher') || !areGearsAllowed()) {
+        backpackToolBtn.style.display = 'none';
+    }
+    backpackToolBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        playClickSound();
+        if (backpackModal.style.display === 'block') {
+            backpackModal.style.display = 'none';
+            backpackToolBtn.classList.remove('open');
+        } else {
+            backpackModal.style.display = 'block';
+            backpackToolBtn.classList.add('open');
+            updateBackpackItems();
+        }
+    });
+
     const equipBtn = document.getElementById('equip-tool-btn');
     equipBtn.addEventListener('click', () => {
         if (equippedTool) {
@@ -3580,7 +5160,7 @@ const rocketMaxDistance = 30; // units
 function spawnRocket(startPos, direction, ownerId) {
     const rocketGeometry = new THREE.BoxGeometry(1, 1, 1);
     const textureLoader = new THREE.TextureLoader();
-    const texture = textureLoader.load('roblox-stud.png');
+    const texture = textureLoader.load('imgs/roblox-stud.png');
     const rocketMaterial = new THREE.MeshBasicMaterial({
         map: texture,
         color: new THREE.Color('#89CFF0'),
@@ -3629,11 +5209,14 @@ function animate() {
 
     const time = performance.now();
     const delta = (time - prevTime) / 1000;
-    const fixedTimeStep = 1 / 60; // 60 FPS
+
+    // Update previous ground contact state
+    prevCanJumpFromGround = canJumpFromGround;
+    const fixedTimeStep = 1 / 160; // 160 FPS for ultra-responsive collision detection
 
     for (let i = explodingParticles.length - 1; i >= 0; i--) {
     const particle = explodingParticles[i];
-    const elapsedTime = (performance.now() - particle.userData.creationTime) / 1000;
+    const elapsedTime = (performance.now() - particle.userData.creationTime) / 2200;
 
     // Aplica gravidade à velocidade da partícula
     particle.userData.velocity.y -= 9.82 * delta * 2; // gravidade
@@ -3657,16 +5240,17 @@ function animate() {
     }
 }
 
-    // Interpolate other players (optimized)
-    if (performance.now() % 3 < 1) { // Only interpolate every 3 frames
-        for (const id in otherPlayers) {
-            const remotePlayer = otherPlayers[id];
-            if (remotePlayer.userData.targetPosition && remotePlayer.userData.targetQuaternion) {
-                remotePlayer.position.lerp(remotePlayer.userData.targetPosition, 0.2);
-                remotePlayer.quaternion.slerp(remotePlayer.userData.targetQuaternion, 0.2);
-            }
+    // Interpolate other players smoothly every frame
+    for (const id in otherPlayers) {
+        const remotePlayer = otherPlayers[id];
+        if (remotePlayer.userData.targetPosition && remotePlayer.userData.targetQuaternion) {
+            // Smoother position interpolation with lower lerp factor
+            remotePlayer.position.lerp(remotePlayer.userData.targetPosition, 0.2);
+            // Smoother rotation interpolation
+            remotePlayer.quaternion.slerp(remotePlayer.userData.targetQuaternion, 0.2);
         }
     }
+
 
     for (const id in otherPlayers) {
     const remotePlayer = otherPlayers[id];
@@ -3676,7 +5260,6 @@ function animate() {
 
     // EQUIP animação
     if (remotePlayer.userData.isEquipping) {
-    remotePlayer.userData.equipAnimProgress += delta;
     const t = Math.min(remotePlayer.userData.equipAnimProgress / equipAnimDuration, 1);
     const start = (typeof remotePlayer.userData.equipStartRotation === 'number') ? remotePlayer.userData.equipStartRotation : remotePlayer.rightArm.rotation.x;
     const target = (typeof remotePlayer.userData.equipTargetRotation === 'number') ? remotePlayer.userData.equipTargetRotation : equipTargetRotation;
@@ -3691,7 +5274,6 @@ function animate() {
 
 // UNEQUIP animação
 if (remotePlayer.userData.isUnequipping) {
-    remotePlayer.userData.unequipAnimProgress += delta;
     const t = Math.min(remotePlayer.userData.unequipAnimProgress / equipAnimDuration, 1);
     const start = (typeof remotePlayer.userData.unequipStartRotation === 'number') ? remotePlayer.userData.unequipStartRotation : remotePlayer.rightArm.rotation.x;
     const target = (typeof remotePlayer.userData.unequipTargetRotation === 'number') ? remotePlayer.userData.unequipTargetRotation : 0;
@@ -3703,7 +5285,7 @@ if (remotePlayer.userData.isUnequipping) {
         remotePlayer.rightArm.rotation.x = target; // volta pro normal
         if (model && model.parent) model.parent.remove(model);
         if (model) model.visible = false;
-}
+    }
 }
 
 if (remotePlayer.userData.isEquipped) {
@@ -3711,18 +5293,179 @@ if (remotePlayer.userData.isEquipped) {
 }
 }
 
+// Updated walking movement logic with full WASD controls
+ensurePlayerPhysicsBody();
+let isMoving = false;
+// Build raw input from digital keys / joystick axes
+const inputX = Number(moveRight) - Number(moveLeft); // A/D or left/right
+const inputZ = Number(moveForward) - Number(moveBackward); // W/S or forward/backward
 
-    // Step physics world
-    physicsWorld.step(fixedTimeStep, delta, 20); // Much higher iterations for stability
+isMoving = (inputX !== 0 || inputZ !== 0);
+
+if (isMoving) {
+    // Get camera's forward vector (normalized, y=0 for ground movement)
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y = 0;
+    forward.normalize();
+
+    // RIGHT
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, new THREE.Vector3(0, 1, 0));
+    right.normalize();
+
+    // FINAL DIRECTION
+    const direction = new THREE.Vector3();
+    direction.addScaledVector(forward, inputZ);
+    direction.addScaledVector(right, inputX);
+    direction.normalize();
+
+    player.position.add(direction.clone().multiplyScalar(velocidade * delta));
+
+    if (direction.length() > 0.1) {
+        player.rotation.y = Math.atan2(direction.x, direction.z);
+    }
+
+    // Sync physics body position - only X/Z for movement, let Y be determined by physics for gravity
+    if (player.userData.body) {
+        player.userData.body.position.x = player.position.x;
+        player.userData.body.position.z = player.position.z;
+        player.userData.body.velocity.x = 0;
+        player.userData.body.velocity.z = 0;
+        player.userData.body.quaternion.setFromEuler(0, player.rotation.y, 0);
+    }
+
+    // Play walk sound if on ground
+    if (canJump && walkSound && !walkSound.isPlaying) {
+        walkSound.play();
+    }
+} else {
+    // Stop walk sound when not moving
+    if (walkSound && walkSound.isPlaying) {
+        walkSound.stop();
+    }
+    // Stop player velocity to prevent sliding
+    if (player.userData.body) {
+        player.userData.body.velocity.x = 0;
+        player.userData.body.velocity.z = 0;
+    }
+}
+
+// Sanitize body positions, velocities, and angular velocities to prevent NaN propagation
+physicsWorld.bodies.forEach(body => {
+    let reset = false;
+    if (body.position && (isNaN(body.position.x) || isNaN(body.position.y) || isNaN(body.position.z))) {
+        console.warn('NaN detected in body position, resetting to safe position');
+        body.position.set(0, 0, 0);
+        reset = true;
+    }
+    if (body.velocity && (isNaN(body.velocity.x) || isNaN(body.velocity.y) || isNaN(body.velocity.z))) {
+        console.warn('NaN detected in body velocity, resetting to safe velocity');
+        body.velocity.set(0, 0, 0);
+        reset = true;
+    }
+    if (body.angularVelocity && (isNaN(body.angularVelocity.x) || isNaN(body.angularVelocity.y) || isNaN(body.angularVelocity.z))) {
+        console.warn('NaN detected in body angularVelocity, resetting to safe angularVelocity');
+        body.angularVelocity.set(0, 0, 0);
+        reset = true;
+    }
+    if (reset) {
+        console.log('Reset body', body.id);
+    }
+});
+
+// Step physics world
+physicsWorld.step(fixedTimeStep, delta, 640); // Maximum substeps for ultra-responsive collision
+
+// Sync unanchored parts that have moved significantly
+const now = performance.now();
+Object.values(luaObjects).forEach(obj => {
+    if (obj.ClassName === 'Part' && !obj.Anchored && obj.threeObject && obj.cannonBody) {
+        const name = obj.Name;
+        const currentPos = obj.threeObject.position;
+        const currentRot = obj.threeObject.rotation;
+        const lastState = lastPartState[name];
+        if (!lastState) {
+            lastPartState[name] = { position: currentPos.clone(), rotation: currentRot.clone() };
+            return;
+        }
+        const dist = currentPos.distanceTo(lastState.position);
+        const rotDiff = Math.abs(currentRot.x - lastState.rotation.x) + Math.abs(currentRot.y - lastState.rotation.y) + Math.abs(currentRot.z - lastState.rotation.z);
+        const thresholdDist = 0.1;
+        const thresholdRot = Math.PI / 36; // 5 degrees
+        const lastSync = lastPartSync[name] || 0;
+        const throttleMs = 50; // max 20 updates/sec
+        if ((dist > thresholdDist || rotDiff > thresholdRot) && now - lastSync > throttleMs) {
+            lastPartState[name] = { position: currentPos.clone(), rotation: currentRot.clone() };
+            lastPartSync[name] = now;
+            if (socket && socket.connected) {
+                socket.emit('partMoved', {
+                    name: name,
+                    position: { x: currentPos.x, y: currentPos.y, z: currentPos.z },
+                    rotation: { x: currentRot.x, y: currentRot.y, z: currentRot.z },
+                    velocity: obj.cannonBody.velocity ? { x: obj.cannonBody.velocity.x, y: obj.cannonBody.velocity.y, z: obj.cannonBody.velocity.z } : null
+                });
+            }
+        }
+    }
+});
 
 
-    // Animate fallen parts with physics
-    if (isRespawning) {
-        fallenParts.forEach(part => {
-            // Update mesh position and rotation from physics body
-            part.mesh.position.copy(part.body.position);
-            part.mesh.quaternion.copy(part.body.quaternion);
-        });
+if (player.userData.body) {
+    const pos = player.userData.body.position;
+    if (isNaN(pos.x) || isNaN(pos.y) || isNaN(pos.z)) {
+        console.error('Physics body position is NaN:', pos);
+    }
+}
+
+
+    // Animate fallen parts with simple physics simulation
+    const bounceFactor = 0.6; // Energy loss on bounce
+    const angularDamping = 0.8; // Reduce spin on bounce
+    const minVelocity = 0.2; // Minimum velocity to stop bouncing
+
+    for (let i = fallenParts.length - 1; i >= 0; i--) {
+        const part = fallenParts[i];
+        if (part.mesh) {
+            // Apply gravity
+            part.mesh.userData.velocity.y -= 50.0 * delta; // gravity
+
+            // Update position
+            part.mesh.position.add(part.mesh.userData.velocity.clone().multiplyScalar(delta));
+
+            // Update rotation
+            part.mesh.rotation.x += part.mesh.userData.angularVelocity.x * delta;
+            part.mesh.rotation.y += part.mesh.userData.angularVelocity.y * delta;
+            part.mesh.rotation.z += part.mesh.userData.angularVelocity.z * delta;
+
+            // Ground collision and bouncing
+            if (part.mesh.position.y <= 0) {
+                part.mesh.position.y = 0; // Clamp to ground level (visual ground at y=0)
+                if (Math.abs(part.mesh.userData.velocity.y) > minVelocity) {
+                    // Bounce with energy loss
+                    part.mesh.userData.velocity.y *= -bounceFactor;
+                    // Dampen angular velocity
+                    part.mesh.userData.angularVelocity.multiplyScalar(angularDamping);
+                } else {
+                    // Stop bouncing, come to rest
+                    part.mesh.userData.velocity.y = 0;
+                    part.mesh.userData.angularVelocity.set(0, 0, 0);
+                }
+                // Apply friction to horizontal velocity to prevent sliding
+                part.mesh.userData.velocity.x *= 0.8;
+                part.mesh.userData.velocity.z *= 0.8;
+                // Stop completely if velocity is very low
+                if (Math.abs(part.mesh.userData.velocity.x) < 0.1) part.mesh.userData.velocity.x = 0;
+                if (Math.abs(part.mesh.userData.velocity.z) < 0.1) part.mesh.userData.velocity.z = 0;
+            }
+
+            // Remove if below ground (fallback, though bouncing should prevent this)
+            if (part.mesh.position.y < 0) {
+                scene.remove(part.mesh);
+                // Do not dispose geometry/material as they are shared with the original player
+                fallenParts.splice(i, 1);
+            }
+        }
     }
 
     // Sync physics bodies with three.js objects for script-created parts
@@ -3813,9 +5556,81 @@ if (remotePlayer.userData.isEquipped) {
         baseCameraOffset.copy(cameraOffset).normalize().multiplyScalar(baseCameraOffset.length());
     }
 
+    // Atualiza e remove rockets (optimized) - moved before respawn check so rockets keep moving during respawn
+    for (let i = activeRockets.length - 1; i >= 0; i--) {
+        const rocketObj = activeRockets[i];
+        const { mesh, direction, ownerId } = rocketObj;
+        const moveStep = rocketSpeed * delta;
+        mesh.position.add(direction.clone().multiplyScalar(moveStep));
+        rocketObj.traveled += moveStep;
+
+        // Colisão simples com players - only check every few frames
+        if (performance.now() % 3 < 1) { // Check collision every 3 frames
+            let hitPlayer = null;
+            let victimId = null;
+
+            // Check collision with local player
+            if (
+                ownerId !== playerId &&
+                rocketObj.traveled > 2.0 && // Prevent self-explosion by waiting for rocket to travel further
+                player.visible &&
+                mesh.position.distanceTo(player.position) < 2
+            ) {
+                hitPlayer = player;
+                victimId = playerId;
+            }
+
+            // Check collision with remote players
+            if (!hitPlayer) {
+                for (const id in otherPlayers) {
+                    const remotePlayer = otherPlayers[id];
+                    if (
+                        ownerId !== id && // Not the owner
+                        remotePlayer.visible &&
+                        mesh.position.distanceTo(remotePlayer.position) < 2
+                    ) {
+                        hitPlayer = remotePlayer;
+                        victimId = id;
+                        break; // Hit the first one
+                    }
+                }
+            }
+
+            if (hitPlayer) {
+                // Emit to server for all hits
+                if (socket && socket.connected) {
+                    socket.emit('playerHit', { killer: ownerId, victim: victimId });
+                    socket.emit('explosion', { position: mesh.position });
+                }
+                scene.remove(mesh);
+                activeRockets.splice(i, 1);
+                continue;
+            }
+        }
+
+        // Checa colisão com o chão (y <= 0)
+        if (mesh.position.y <= 0) {
+            if (socket && socket.connected) {
+                socket.emit('explosion', { position: mesh.position });
+            }
+            scene.remove(mesh);
+            activeRockets.splice(i, 1);
+            continue;
+        }
+
+        // Remove se passou da distância máxima
+        if (rocketObj.traveled > rocketMaxDistance) {
+            if (socket && socket.connected) {
+                socket.emit('explosion', { position: mesh.position });
+            }
+            scene.remove(mesh);
+            activeRockets.splice(i, 1);
+        }
+    }
+
     if (isRespawning) {
         prevTime = time;
-         // Render scene to low-res render target
+          // Render scene to low-res render target
         renderer.setRenderTarget(renderTarget);
         renderer.render(scene, camera);
 
@@ -3825,62 +5640,9 @@ if (remotePlayer.userData.isEquipped) {
         return; // Skip player logic while respawning
     }
 
-    // Updated walking movement logic with full WASD controls
-    ensurePlayerPhysicsBody();
-    let isMoving = false;
-    if (player.userData.body) {
-        // Build raw input from digital keys / joystick axes
-        const inputX = Number(moveRight) - Number(moveLeft); // A/D or left/right
-        const inputZ = Number(moveForward) - Number(moveBackward); // W/S or forward/backward
-
-        isMoving = (inputX !== 0 || inputZ !== 0);
-
-        if (isMoving) {
-            // Get camera's forward vector (normalized, y=0 for ground movement)
-            const forward = new THREE.Vector3();
-            camera.getWorldDirection(forward);
-            forward.y = 0;
-            forward.normalize();
-
-            // Get camera's right vector (cross product of forward and up)
-            const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-
-            // Combine forward and right vectors based on input
-            const direction = new THREE.Vector3()
-                .addScaledVector(forward, inputZ)  // Forward/backward component
-                .addScaledVector(right, inputX);   // Left/right component
-
-            // Normalize the combined direction
-            direction.normalize();
-
-            // Apply air control factor for reduced speed in air
-            const airControlFactor = canJump ? 1.0 : 0.25;
-            const adjustedVelocidade = velocidade * airControlFactor;
-
-            // Add direction multiplied by velocidade to player position
-            player.position.add(direction.multiplyScalar(adjustedVelocidade * delta));
-
-            // Update physics body position to match
-            player.userData.body.position.copy(player.position);
-            player.userData.body.position.y -= 1.0; // Adjust for visual offset
-
-            // Set player rotation to face movement direction
-            player.rotation.y = Math.atan2(direction.x, direction.z);
-
-            // Sync physics body rotation
-            player.userData.body.quaternion.setFromEuler(0, player.rotation.y, 0);
-
-            // Play walk sound if on ground
-            if (canJump && walkSound && !walkSound.isPlaying) {
-                walkSound.play();
-            }
-        } else {
-            // Stop walk sound when not moving
-            if (walkSound && walkSound.isPlaying) {
-                walkSound.stop();
-            }
-        }
-    }
+    // Update canJump based on ground detection only
+    const oldCanJump = canJump;
+    canJump = canJumpFromGround && !hasJumpedThisCycle;
 
     // Animation logic
     const isMovingOnGround = isMoving && canJump;
@@ -3893,32 +5655,14 @@ if (remotePlayer.userData.isEquipped) {
         player.leftLeg.rotation.x = THREE.MathUtils.lerp(player.leftLeg.rotation.x, 0, 0.1);
         player.rightLeg.rotation.x = THREE.MathUtils.lerp(player.rightLeg.rotation.x, 0, 0.1);
 
-    } else if (isMovingOnGround) {
+    } else if (isMovingOnGround && !isDancing) {
         animationTime += delta * 10;
         const swingAngle = Math.sin(animationTime) * 0.8;
-        // Choose swing direction based on local movement (so strafing animates correctly)
-        let swingSign = 1;
-        try {
-            const worldVel = new THREE.Vector3(player.userData.body.velocity.x, 0, player.userData.body.velocity.z);
-            if (worldVel.length() > 0.001) {
-                // Player forward in world space (-Z) rotated by player's Y rotation
-                const forwardVec = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(0, player.rotation.y, 0));
-                const rightVec = new THREE.Vector3(1, 0, 0).applyEuler(new THREE.Euler(0, player.rotation.y, 0));
-                const localZ = worldVel.dot(forwardVec);
-                const localX = worldVel.dot(rightVec);
-                // Use the dominant axis to determine sign (forward/back vs strafe)
-                const dominant = Math.abs(localZ) >= Math.abs(localX) ? localZ : localX;
-                swingSign = dominant >= 0 ? 1 : -1;
-            }
-        } catch (e) {
-            swingSign = 1;
-        }
-
-        player.leftArm.rotation.x = swingAngle * swingSign;
-        player.rightArm.rotation.x = -swingAngle * swingSign;
-        player.leftLeg.rotation.x = -swingAngle * swingSign;
-        player.rightLeg.rotation.x = swingAngle * swingSign;
-    } else {
+        player.leftArm.rotation.x = swingAngle;
+        player.rightArm.rotation.x = -swingAngle;
+        player.leftLeg.rotation.x = -swingAngle;
+        player.rightLeg.rotation.x = swingAngle;
+    } else if (!isDancing) {
         animationTime = 0;
         player.leftArm.rotation.x = THREE.MathUtils.lerp(player.leftArm.rotation.x, 0, 0.1);
         player.rightArm.rotation.x = THREE.MathUtils.lerp(player.rightArm.rotation.x, 0, 0.1);
@@ -3926,45 +5670,73 @@ if (remotePlayer.userData.isEquipped) {
         player.rightLeg.rotation.x = THREE.MathUtils.lerp(player.rightLeg.rotation.x, 0, 0.1);
     }
 
-    // Ground collision detection for jumping
-    if (player.userData.body) {
-        // Check if player is on ground or parts by checking contacts
-        const contacts = physicsWorld.contacts;
-        canJump = false;
-        let groundContacts = 0;
+    // DANCE ANIMATION (overrides walking)
+    if (isDancing) {
+        animationTime += delta;
+        const loopTime = animationTime % 0.5;
 
-        console.log('Debug: Total contacts:', contacts.length);
+        const torso = player.getObjectByName("Torso");
+        const head = player.getObjectByName("Head");
 
-        for (let i = 0; i < contacts.length; i++) {
-            const contact = contacts[i];
-            const isPlayerContact = (contact.bi === player.userData.body || contact.bj === player.userData.body);
-            const isGroundContact = (contact.bi.userData?.isGround || contact.bj.userData?.isGround);
-            const isPartContact = (contact.bi.userData?.instance || contact.bj.userData?.instance);
-
-            if (isPlayerContact) {
-                console.log('Debug: Player contact found:', {
-                    isGroundContact,
-                    isPartContact,
-                    normal: contact.ni,
-                    normalY: contact.ni.y
-                });
-            }
-
-            if (isPlayerContact && (isGroundContact || isPartContact)) {
-                // Check if the contact normal is pointing upward (ground contact)
-                const normal = contact.ni;
-                if (normal.y > 0.5) {  // Contact is mostly vertical
-                    canJump = true;
-                    groundContacts++;
-                    console.log('Debug: Ground contact detected, canJump set to true');
-                }
-            }
+        if (loopTime < 0.15) {
+            // FRAME 1 (0.15s)
+            torso.rotation.y = 0.24434609527920614;
+            torso.rotation.z = 0.15707963267948966;
+            player.rightArm.rotation.y = 1.48352986419518;
+            player.rightArm.rotation.z = 0.3839724354387525;
+            player.leftArm.rotation.y = -1.1344640137963142;
+            player.leftArm.rotation.z = -0.3141592653589793;
+            head.rotation.y = 0.10471975511965977;
+            player.rightLeg.rotation.x = -0.6108652381980153;
+            player.rightLeg.rotation.z = 0.08726646259971647;
+            player.leftLeg.rotation.x = 0.4886921905584123;
+            player.leftLeg.rotation.z = -0.06981317007977318;
+        } else if (loopTime < 0.25) {
+            // FRAME 2 (0.10s)
+            torso.rotation.y = 0.06981317007977318;
+            torso.rotation.z = 0.05235987755982988;
+            player.rightArm.rotation.y = 0.8726646259971648;
+            player.rightArm.rotation.z = 0.17453292519943295;
+            player.leftArm.rotation.y = -0.8726646259971648;
+            player.leftArm.rotation.z = -0.17453292519943295;
+            head.rotation.y = 0.03490658503988659;
+            player.rightLeg.rotation.x = -0.17453292519943295;
+            player.rightLeg.rotation.z = 0.03490658503988659;
+            player.leftLeg.rotation.x = 0.13962634015954636;
+            player.leftLeg.rotation.z = -0.017453292519943295;
+        } else if (loopTime < 0.40) {
+            // FRAME 3 (0.15s)
+            torso.rotation.y = -0.24434609527920614;
+            torso.rotation.z = -0.15707963267948966;
+            player.rightArm.rotation.y = -1.48352986419518;
+            player.rightArm.rotation.z = -0.3839724354387525;
+            player.leftArm.rotation.y = 1.1344640137963142;
+            player.leftArm.rotation.z = 0.3141592653589793;
+            head.rotation.y = -0.10471975511965977;
+            player.rightLeg.rotation.x = 0.6108652381980153;
+            player.rightLeg.rotation.z = -0.08726646259971647;
+            player.leftLeg.rotation.x = -0.4886921905584123;
+            player.leftLeg.rotation.z = 0.06981317007977318;
+        } else {
+            // FRAME 4 (0.10s)
+            torso.rotation.y = -0.06981317007977318;
+            torso.rotation.z = -0.05235987755982988;
+            player.rightArm.rotation.y = -0.8726646259971648;
+            player.rightArm.rotation.z = -0.17453292519943295;
+            player.leftArm.rotation.y = 0.8726646259971648;
+            player.leftArm.rotation.z = 0.17453292519943295;
+            head.rotation.y = -0.03490658503988659;
+            player.rightLeg.rotation.x = 0.17453292519943295;
+            player.rightLeg.rotation.z = -0.03490658503988659;
+            player.leftLeg.rotation.x = -0.13962634015954636;
+            player.leftLeg.rotation.z = 0.017453292519943295;
         }
 
-        console.log('Debug: canJump final state:', canJump, 'groundContacts:', groundContacts);
-    } else {
-        console.log('Debug: No player physics body found!');
+        // Optionally, add a little bounce:
+        const baseY = player.userData.body ? player.userData.body.position.y + 3 : 4;
+        player.position.y = baseY + Math.abs(Math.sin(animationTime * 5) * 0.1); // Smaller bounce
     }
+
 
     // Send player position to server (throttled)
     if (socket && socket.connected && time > lastSentTime + sendInterval) {
@@ -3974,58 +5746,90 @@ if (remotePlayer.userData.isEquipped) {
             y: pos.y,
             z: pos.z,
             rotation: player.rotation.y,
-            isMoving: direction.length() > 0.001,
-            isInAir: !canJump // <-- send whether player is in the air (jumping/falling)
+            isMoving: isMoving,
+            isInAir: !canJump, // <-- send whether player is in the air (jumping/falling)
+            isEquipping: isEquipping,
+            isUnequipping: isUnequipping,
+            equipAnimProgress: equipAnimProgress,
+            unequipAnimProgress: unequipAnimProgress,
+            equippedTool: equippedTool
         });
         lastSentTime = time;
     }
 
-    // DANCE ANIMATION
-    if (isDancing) {
-        animationTime += delta * 8;
-        player.leftArm.rotation.x = Math.sin(animationTime) * 1.2 + 1.2;
-        player.rightArm.rotation.x = Math.cos(animationTime) * 1.2 + 1.2;
-        player.leftLeg.rotation.x = Math.sin(animationTime) * 0.8;
-        player.rightLeg.rotation.x = Math.cos(animationTime) * 0.8;
-        player.rotation.y += delta * 2; // Spin
-        // Optionally, add a little bounce:
-        const baseY = player.userData.body ? player.userData.body.position.y : 3;
-        player.position.y = baseY + Math.abs(Math.sin(animationTime) * 0.2);
-        // Render and return early to skip normal movement/animation
-        // Camera follow logic
-        const desiredPosition = player.position.clone().add(cameraOffset);
-        camera.position.copy(desiredPosition);
-        controls.target.copy(player.position);
-        controls.target.y += 1;
-        controls.update();
-        prevTime = performance.now();
-        renderer.setRenderTarget(renderTarget);
-        renderer.render(scene, camera);
-        renderer.setRenderTarget(null);
-        renderer.render(postScene, postCamera);
-        return;
-    }
 
-    // Animate other players' dances (optimized)
-    if (performance.now() % 4 < 1) { // Only update every 4 frames
-        Object.values(otherPlayers).forEach(otherPlayer => {
-            if (otherPlayer.isDancing) {
-                // Animate dance for this player
-                otherPlayer.animationTime = (otherPlayer.animationTime || 0) + delta * 8;
-                otherPlayer.leftArm.rotation.x = Math.sin(otherPlayer.animationTime) * 1.2 + 1.2;
-                otherPlayer.rightArm.rotation.x = Math.cos(otherPlayer.animationTime) * 1.2 + 1.2;
-                otherPlayer.leftLeg.rotation.x = Math.sin(otherPlayer.animationTime) * 0.8;
-                otherPlayer.rightLeg.rotation.x = Math.cos(otherPlayer.animationTime) * 0.8;
-                otherPlayer.rotation.y += delta * 2;
-                // Optionally, add a little bounce:
-                const baseY = otherPlayer.userData.body ? otherPlayer.userData.body.position.y : 3;
-                otherPlayer.position.y = baseY + Math.abs(Math.sin(otherPlayer.animationTime) * 0.2);
+    // Animate other players' dances
+    Object.values(otherPlayers).forEach(otherPlayer => {
+        if (otherPlayer.isDancing) {
+            // Animate dance for this player
+            otherPlayer.animationTime = (otherPlayer.animationTime || 0) + delta;
+            const loopTime = otherPlayer.animationTime % 0.5;
+
+            const torso = otherPlayer.getObjectByName("Torso");
+            const head = otherPlayer.getObjectByName("Head");
+
+            if (loopTime < 0.15) {
+                // FRAME 1 (0.15s)
+                torso.rotation.y = 0.24434609527920614;
+                torso.rotation.z = 0.15707963267948966;
+                otherPlayer.rightArm.rotation.y = 1.48352986419518;
+                otherPlayer.rightArm.rotation.z = 0.3839724354387525;
+                otherPlayer.leftArm.rotation.y = -1.1344640137963142;
+                otherPlayer.leftArm.rotation.z = -0.3141592653589793;
+                head.rotation.y = 0.10471975511965977;
+                otherPlayer.rightLeg.rotation.x = -0.6108652381980153;
+                otherPlayer.rightLeg.rotation.z = 0.08726646259971647;
+                otherPlayer.leftLeg.rotation.x = 0.4886921905584123;
+                otherPlayer.leftLeg.rotation.z = -0.06981317007977318;
+            } else if (loopTime < 0.25) {
+                // FRAME 2 (0.10s)
+                torso.rotation.y = 0.06981317007977318;
+                torso.rotation.z = 0.05235987755982988;
+                otherPlayer.rightArm.rotation.y = 0.8726646259971648;
+                otherPlayer.rightArm.rotation.z = 0.17453292519943295;
+                otherPlayer.leftArm.rotation.y = -0.8726646259971648;
+                otherPlayer.leftArm.rotation.z = -0.17453292519943295;
+                head.rotation.y = 0.03490658503988659;
+                otherPlayer.rightLeg.rotation.x = -0.17453292519943295;
+                otherPlayer.rightLeg.rotation.z = 0.03490658503988659;
+                otherPlayer.leftLeg.rotation.x = 0.13962634015954636;
+                otherPlayer.leftLeg.rotation.z = -0.017453292519943295;
+            } else if (loopTime < 0.40) {
+                // FRAME 3 (0.15s)
+                torso.rotation.y = -0.24434609527920614;
+                torso.rotation.z = -0.15707963267948966;
+                otherPlayer.rightArm.rotation.y = -1.48352986419518;
+                otherPlayer.rightArm.rotation.z = -0.3839724354387525;
+                otherPlayer.leftArm.rotation.y = 1.1344640137963142;
+                otherPlayer.leftArm.rotation.z = 0.3141592653589793;
+                head.rotation.y = -0.10471975511965977;
+                otherPlayer.rightLeg.rotation.x = 0.6108652381980153;
+                otherPlayer.rightLeg.rotation.z = -0.08726646259971647;
+                otherPlayer.leftLeg.rotation.x = -0.4886921905584123;
+                otherPlayer.leftLeg.rotation.z = 0.06981317007977318;
+            } else {
+                // FRAME 4 (0.10s)
+                torso.rotation.y = -0.06981317007977318;
+                torso.rotation.z = -0.05235987755982988;
+                otherPlayer.rightArm.rotation.y = -0.8726646259971648;
+                otherPlayer.rightArm.rotation.z = -0.17453292519943295;
+                otherPlayer.leftArm.rotation.y = 0.8726646259971648;
+                otherPlayer.leftArm.rotation.z = 0.17453292519943295;
+                head.rotation.y = -0.03490658503988659;
+                otherPlayer.rightLeg.rotation.x = 0.17453292519943295;
+                otherPlayer.rightLeg.rotation.z = -0.03490658503988659;
+                otherPlayer.leftLeg.rotation.x = -0.13962634015954636;
+                otherPlayer.leftLeg.rotation.z = 0.017453292519943295;
             }
-        });
-    }
+
+            // Optionally, add a little bounce:
+            const baseY = otherPlayer.userData.body ? otherPlayer.userData.body.position.y + 3 : 4;
+            otherPlayer.position.y = baseY + Math.abs(Math.sin(otherPlayer.animationTime * 5) * 0.1); // Smaller bounce
+        }
+    });
 
     // Update name tags (throttled)
-    if (performance.now() % 4 < 1) { // Only update every 4 frames
+    if (performance.now() % 2 < 1) { // Only update every 2 frames
         for (const id in otherPlayers) {
             const remotePlayer = otherPlayers[id];
             if (!remotePlayer) continue;
@@ -4059,20 +5863,60 @@ if (remotePlayer.userData.isEquipped) {
             let screenPos = headPos.clone().project(camera);
             let x = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
             let y = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
-
+    
+            // Check if player is in front of camera
+            const cameraToPlayer = headPos.clone().sub(camera.position);
+            const cameraForward = new THREE.Vector3();
+            camera.getWorldDirection(cameraForward);
+            if (cameraToPlayer.dot(cameraForward) <= 0) {
+                nameTag.style.display = 'none';
+                continue;
+            } else {
+                nameTag.style.display = 'block';
+            }
+    
             nameTag.style.left = `${x - nameTag.offsetWidth / 2}px`;
             nameTag.style.top = `${y - 20}px`;
         }
     }
 
+    // Sync player visual position from physics body before camera follow
+    if (player.userData.body) {
+        const bodyPos = player.userData.body.position;
+        if (isNaN(bodyPos.x) || isNaN(bodyPos.y) || isNaN(bodyPos.z)) {
+            console.warn('NaN detected in player body position, skipping sync');
+        } else {
+            // Sync visual position from physics body
+            const oldPosition = player.position.clone();
+            player.position.copy(bodyPos);
+            player.position.y += 0.65; // Offset visual upward to align feet with physics body bottom
+
+            // Position syncing completed
+
+            // Sync physics body rotation to match visual rotation
+            player.userData.body.quaternion.setFromEuler(0, player.rotation.y, 0);
+        }
+    }
+
     // Camera follow logic
     const desiredPosition = player.position.clone().add(cameraOffset);
-    camera.position.copy(desiredPosition);
-    
+    if (isNaN(desiredPosition.x) || isNaN(desiredPosition.y) || isNaN(desiredPosition.z)) {
+        console.warn('NaN detected in desired camera position, resetting camera to safe position');
+        camera.position.set(0, 10, 15);
+    } else {
+        camera.position.copy(desiredPosition);
+    }
+
     controls.target.copy(player.position);
     controls.target.y += 1; // Look slightly above player's base
 
     controls.update();
+
+    // Ensure camera.position remains finite before rendering
+    if (isNaN(camera.position.x) || isNaN(camera.position.y) || isNaN(camera.position.z)) {
+        console.warn('Camera position became NaN, resetting');
+        camera.position.set(0, 10, 15);
+    }
 
     prevTime = performance.now();
 
@@ -4087,7 +5931,7 @@ if (remotePlayer.userData.isEquipped) {
     // Keep right arm straight while rocket launcher is equipped and not equipping
     if (equippedTool === 'rocketLauncher' && !isEquipping) {
         player.rightArm.rotation.x = -Math.PI /  2;
- }
+  }
     // --- Equip animation for rocket launcher ---
 
     if (isEquipping) {
@@ -4098,7 +5942,7 @@ if (remotePlayer.userData.isEquipped) {
             player.rightArm.rotation.x,
             equipTargetRotation,
             t
-       
+
         );
         if (t >= 1) {
             player.rightArm.rotation.x = equipTargetRotation;
@@ -4108,74 +5952,7 @@ if (remotePlayer.userData.isEquipped) {
         player.rightArm.rotation.x = equipTargetRotation;
     }
 
-    if ( player.userData.body) {
-        // Sync visual position from physics body
-        const oldPosition = player.position.clone();
-        player.position.copy(player.userData.body.position);
-        player.position.y += 1.0; // Offset visual upward to align feet with physics body bottom
-
-        console.log('Debug: Body position after sync:', player.userData.body.position);
-        console.log('Debug: Visual position after sync:', player.position);
-
-        // Sync physics body rotation to match visual rotation
-        player.userData.body.quaternion.setFromEuler(0, player.rotation.y, 0);
-    }
-
     ensurePlayerPhysicsBody();
-
-    // Atualiza e remove rockets (optimized)
-    for (let i = activeRockets.length - 1; i >= 0; i--) {
-        const rocketObj = activeRockets[i];
-        const { mesh, direction, ownerId } = rocketObj;
-        const moveStep = rocketSpeed * delta;
-        mesh.position.add(direction.clone().multiplyScalar(moveStep));
-        rocketObj.traveled += moveStep;
-
-        // Colisão simples com player local (AABB) - only check every few frames
-        if (performance.now() % 3 < 1) { // Check collision every 3 frames
-            if (
-                ownerId !== playerId &&
-                player.visible &&
-                mesh.position.distanceTo(player.position) < 2
-            ) {
-                // Take damage
-                playerHealth -= 25;
-                if (playerHealth <= 0) {
-                    respawnPlayer();
-                } else {
-                    // Update UI
-                    document.getElementById('health-text').textContent = playerHealth;
-                    document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
-                }
-                if (socket && socket.connected) {
-                    socket.emit('playerHit', { killer: ownerId, victim: playerId });
-                    socket.emit('explosion', { position: mesh.position });
-                }
-                scene.remove(mesh);
-                activeRockets.splice(i, 1);
-                continue;
-            }
-        }
-
-        // Checa colisão com o chão (y <= 0)
-        if (mesh.position.y <= 0) {
-            if (socket && socket.connected) {
-                socket.emit('explosion', { position: mesh.position });
-            }
-            scene.remove(mesh);
-            activeRockets.splice(i, 1);
-            continue;
-        }
-
-        // Remove se passou da distância máxima
-        if (rocketObj.traveled > rocketMaxDistance) {
-            if (socket && socket.connected) {
-                socket.emit('explosion', { position: mesh.position });
-            }
-            scene.remove(mesh);
-            activeRockets.splice(i, 1);
-        }
-    }
 }
 
 // Chat message handling
@@ -4198,17 +5975,20 @@ window.addEventListener('DOMContentLoaded', () => {
 
     menuBtn.addEventListener('click', () => {
         gameMenu.style.display = 'block';
+        document.getElementById('menu-overlay').classList.add('active');
         isMenuOpen = true;
     });
 
     resumeBtn.addEventListener('click', () => {
         gameMenu.style.display = 'none';
+        document.getElementById('menu-overlay').classList.remove('active');
         isMenuOpen = false;
     });
 
     optionsBtn.addEventListener('click', () => {
         gameMenu.style.display = 'none';
         optionsMenu.style.display = 'block';
+        // Keep overlay active when switching to options menu
     });
 
     const backToMenuBtn = document.getElementById('back-to-menu-btn');
@@ -4220,6 +6000,7 @@ window.addEventListener('DOMContentLoaded', () => {
     backToMenuBtn.addEventListener('click', () => {
         optionsMenu.style.display = 'none';
         gameMenu.style.display = 'block';
+        // Keep overlay active when going back to main menu
     });
 
     muteToggle.addEventListener('change', () => {
@@ -4255,6 +6036,35 @@ window.addEventListener('DOMContentLoaded', () => {
         if (pixelatedToggle) pixelatedToggle.checked = pixelatedEffectEnabled;
     });
 
+    const consoleBtn = document.getElementById('console-btn');
+    if (consoleBtn) {
+        consoleBtn.addEventListener('click', () => {
+            const consoleModal = document.getElementById('console-modal');
+            const menuOverlay = document.getElementById('menu-overlay');
+            if (consoleModal && menuOverlay) {
+                consoleModal.style.display = 'block';
+                menuOverlay.classList.add('active');
+                isConsoleOpen = true;
+            }
+        });
+    }
+
+    const closeConsoleBtn = document.getElementById('close-console-btn');
+    if (closeConsoleBtn) {
+        closeConsoleBtn.addEventListener('click', () => {
+            const consoleModal = document.getElementById('console-modal');
+            const optionsMenu = document.getElementById('options-menu');
+            const menuOverlay = document.getElementById('menu-overlay');
+            if (consoleModal && optionsMenu && menuOverlay) {
+                consoleModal.style.display = 'none';
+                optionsMenu.style.display = 'none';
+                menuOverlay.classList.remove('active');
+                isConsoleOpen = false;
+                isMenuOpen = false;
+            }
+        });
+    }
+
     exitBtn.addEventListener('click', () => {
         window.location.href = '/'; // Or any exit logic you want
     });
@@ -4277,6 +6087,7 @@ window.addEventListener('DOMContentLoaded', () => {
             helpTutorial.style.display = 'block';
             console.log('Debug: gameMenu after:', gameMenu.style.display);
             console.log('Debug: helpTutorial after:', helpTutorial.style.display);
+            // Keep overlay active when switching to tutorial
         });
     } else {
         console.error('Debug: helpBtn not found!');
@@ -4292,6 +6103,7 @@ window.addEventListener('DOMContentLoaded', () => {
             gameMenu.style.display = 'block';
             console.log('Debug: helpTutorial after:', helpTutorial.style.display);
             console.log('Debug: gameMenu after:', gameMenu.style.display);
+            // Keep overlay active when going back to main menu
         });
         console.log('Debug: closeTutorialBtn event listener added successfully');
     } else {
@@ -4309,13 +6121,47 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ESC key closes menu
+    // Click on overlay closes modals
+    const menuOverlay = document.getElementById('menu-overlay');
+    if (menuOverlay) {
+        menuOverlay.addEventListener('click', () => {
+            if (isConsoleOpen) {
+                const consoleModal = document.getElementById('console-modal');
+                if (consoleModal) {
+                    consoleModal.style.display = 'none';
+                    menuOverlay.classList.remove('active');
+                    isConsoleOpen = false;
+                }
+            } else if (isMenuOpen) {
+                gameMenu.style.display = 'none';
+                menuOverlay.classList.remove('active');
+                isMenuOpen = false;
+            }
+        });
+    }
+
+    // ESC key closes console or toggles menu
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
-            gameMenu.style.display = 'none';
-            isMenuOpen = false;
+            const overlay = document.getElementById('menu-overlay');
+            if (isConsoleOpen) {
+                const consoleModal = document.getElementById('console-modal');
+                if (consoleModal) {
+                    consoleModal.style.display = 'none';
+                    overlay.classList.remove('active');
+                    isConsoleOpen = false;
+                }
+            } else if (isMenuOpen) {
+                gameMenu.style.display = 'none';
+                overlay.classList.remove('active');
+                isMenuOpen = false;
+            } else {
+                gameMenu.style.display = 'block';
+                overlay.classList.add('active');
+                isMenuOpen = true;
+            }
         }
- });
+    });
 });
 
 window.addEventListener('mousemove', (event) => {
@@ -4404,8 +6250,13 @@ function attachRocketLauncherToArm(arm, model) {
 function addFaceToPlayer(player, faceId) {
     if (!player || !faceId) return;
 
+    // Ensure faceId starts with 'imgs/' for moved assets
+    if (!faceId.startsWith('imgs/')) {
+        faceId = 'imgs/' + faceId;
+    }
+
     // Remove existing face if any
-    if (player.userData.facePlane) {
+    if (player.userData.facePlane && player.userData.facePlane.parent) {
         player.userData.facePlane.parent.remove(player.userData.facePlane);
     }
 
@@ -4454,9 +6305,9 @@ function updateFaceSelector() {
 
     // Define all available faces with their display names
     const allFaces = {
-        'OriginalGlitchedFace.webp': 'Classic',
-        'epicface.png': 'Epic',
-        'daniel.png': 'Daniel'
+        'imgs/OriginalGlitchedFace.webp': 'Classic',
+        'imgs/epicface.png': 'Epic',
+        'imgs/daniel.png': 'Daniel'
     };
 
     // Add owned faces to selector
@@ -4470,12 +6321,12 @@ function updateFaceSelector() {
     });
 
     // Set current face if it's owned
-    const currentFace = localStorage.getItem('rogold_face') || 'OriginalGlitchedFace.webp';
+    const currentFace = localStorage.getItem('rogold_face') || 'imgs/OriginalGlitchedFace.webp';
     if (ownedFaces.includes(currentFace)) {
         faceSelect.value = currentFace;
     } else {
         // Default to first owned face
-        faceSelect.value = ownedFaces[0] || 'OriginalGlitchedFace.webp';
+        faceSelect.value = ownedFaces[0] || 'imgs/OriginalGlitchedFace.webp';
     }
 }
 
@@ -4485,5 +6336,41 @@ function unlockFace(faceId) {
         localStorage.setItem('rogold_owned_faces', JSON.stringify(ownedFaces));
         updateFaceSelector();
     }
+}
+
+function addConsoleOutput(message, type = 'info') {
+    const consoleOutput = document.getElementById('console-output');
+    if (consoleOutput) {
+        const timestamp = new Date().toLocaleTimeString();
+        let prefix = '';
+        let color = '';
+        switch (type) {
+            case 'error':
+                prefix = '[ERROR] ';
+                color = 'red';
+                break;
+            case 'success':
+                prefix = '[SUCCESS] ';
+                color = 'green';
+                break;
+            case 'warning':
+                prefix = '[WARNING] ';
+                color = 'yellow';
+                break;
+            default:
+                prefix = '[INFO] ';
+                color = 'white';
+        }
+        const span = document.createElement('span');
+        span.style.color = color;
+        span.textContent = `[${timestamp}] ${prefix}${message}\n`;
+        consoleOutput.appendChild(span);
+        consoleOutput.scrollTop = consoleOutput.scrollHeight;
+    }
+}
+
+function areGearsAllowed() {
+    const settings = JSON.parse(localStorage.getItem('rogold_studio_settings') || '{}');
+    return settings.gearsAllowed !== false; // Default to true
 }
 

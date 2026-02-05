@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rogold - O mundo dos jogos!</title>
-    <link rel="icon" href="logo.png" type="image/png">
+    <link rel="icon" href="imgs/logo.png" type="image/png">
     <link rel="stylesheet" href="stylefront.css">
     <script type="importmap">
         {
@@ -18,7 +18,7 @@
 <body>
     <div class="container">
         <header>
-            <img src="IMG_1510.png" alt="Rogold Logo" class="logo-img">
+            <img src="imgs/logo.png" alt="Rogold Logo" class="logo-img">
             <h1 class="logo">ROGOLD</h1>
             <nav>
                 <ul class="menu">
@@ -36,6 +36,7 @@
             <div class="banner">
                 <h2>Bem-vindo ao Rogold - O mundo dos jogos!</h2>
                 <p>Junte-se a milhões de jogadores e explore jogos incríveis feitos pela comunidade.</p>
+                <div class="alpha-banner">ALPHA RELEASE - Obrigado pelo apoio!</div>
             </div>
 
             <!-- Profile Section -->
@@ -63,13 +64,13 @@
                             <span class="stat-label">Favoritos</span>
                         </div>
                         <div class="stat-item">
-                            <span class="stat-number">0</span>
+                            <span id="profile-visits" class="stat-number">0</span>
                             <span class="stat-label">Visitas</span>
                         </div>
                         <!-- NEW: Coins display in profile -->
                         <div class="stat-item">
                             <span id="user-coins" class="stat-number coins-value">0</span>
-                            <span class="stat-label">Coins</span>
+                            <span class="stat-label">GoldBucks</span>
                         </div>
                     </div>
                 </div>
@@ -100,30 +101,82 @@
                         </div>
 
                         <div id="friends-tab" class="tab-panel">
-                            <h3>Amigos</h3>
-                            <div class="friends-management">
+                            <h3>Friends</h3>
+                            <div class="friends-stats">
+                                <div class="stat-item" onclick="switchFriendTab('friends')">
+                                    <span class="stat-value" id="friends-count">0</span>
+                                    <span class="stat-label">Friends</span>
+                                </div>
+                                <div class="stat-item" onclick="switchFriendTab('followers')">
+                                    <span class="stat-value" id="followers-count">0</span>
+                                    <span class="stat-label">Followers</span>
+                                </div>
+                                <div class="stat-item" onclick="switchFriendTab('following')">
+                                    <span class="stat-value" id="following-count">0</span>
+                                    <span class="stat-label">Following</span>
+                                </div>
+                            </div>
+                            
+                            <!-- Friend sub-tabs -->
+                            <div class="friend-subtabs">
+                                <button class="friend-subtab active" data-subtab="friends" onclick="switchFriendTab('friends')">Friends</button>
+                                <button class="friend-subtab" data-subtab="requests" onclick="switchFriendTab('requests')">
+                                    Requests
+                                    <span class="request-badge" id="request-count-badge" style="display:none;">0</span>
+                                </button>
+                                <button class="friend-subtab" data-subtab="sent-requests" onclick="switchFriendTab('sent-requests')">
+                                    Sent
+                                    <span class="request-badge" id="sent-count-badge" style="display:none;">0</span>
+                                </button>
+                                <button class="friend-subtab" data-subtab="followers" onclick="switchFriendTab('followers')">Followers</button>
+                                <button class="friend-subtab" data-subtab="following" onclick="switchFriendTab('following')">Following</button>
+                            </div>
+                            
+                            <!-- Search users -->
+                            <div class="search-section">
                                 <div class="form-group search-users">
-                                    <label for="user-search-input">Procurar Usuários:</label>
-                                    <input type="text" id="user-search-input" placeholder="Digite o nome de usuário...">
-                                    <button class="primary-button" id="search-users-button">Procurar</button>
+                                    <label for="user-search-input">Find Friends:</label>
+                                    <input type="text" id="user-search-input" placeholder="Enter username...">
+                                    <button class="primary-button" id="search-users-button">Search</button>
                                 </div>
-                                <div id="user-search-results" class="search-results-grid">
-                                    <p class="empty-message">Procure por usuários para adicionar como amigo.</p>
-                                </div>
-
-                                <h4>Pedidos de Amizade Recebidos</h4>
-                                <div id="incoming-requests" class="requests-grid">
-                                    <p class="empty-message">Nenhum pedido de amizade recebido.</p>
-                                </div>
-
-                                <h4>Pedidos de Amizade Enviados</h4>
-                                <div id="outgoing-requests" class="requests-grid">
-                                    <p class="empty-message">Nenhum pedido de amizade enviado.</p>
-                                </div>
-
-                                <h4>Seus Amigos</h4>
+                            </div>
+                            
+                            <!-- Friend lists by sub-tab -->
+                            <div id="friends-content" class="friend-content active">
                                 <div class="friends-grid" id="friends-list">
-                                    <p class="empty-message">Nenhum amigo ainda.</p>
+                                    <p class="empty-message">No friends yet. Add some friends!</p>
+                                </div>
+                            </div>
+                            
+                            <div id="requests-content" class="friend-content">
+                                <div class="requests-grid" id="friend-requests-list">
+                                    <p class="empty-message">No friend requests.</p>
+                                </div>
+                            </div>
+                            
+                            <div id="sent-requests-content" class="friend-content">
+                                <div class="requests-grid" id="sent-requests-list">
+                                    <p class="empty-message">No sent friend requests.</p>
+                                </div>
+                            </div>
+                            
+                            <div id="followers-content" class="friend-content">
+                                <div class="followers-grid" id="followers-list">
+                                    <p class="empty-message">No followers yet.</p>
+                                </div>
+                            </div>
+                            
+                            <div id="following-content" class="friend-content">
+                                <div class="following-grid" id="following-list">
+                                    <p class="empty-message">Not following anyone yet.</p>
+                                </div>
+                            </div>
+                            
+                            <!-- Search results -->
+                            <div class="search-results-section">
+                                <h4>Search Results</h4>
+                                <div id="user-search-results" class="search-results-grid">
+                                    <p class="empty-message">Search for users to add as friend.</p>
                                 </div>
                             </div>
                         </div>
@@ -214,7 +267,7 @@
                     <button class="back-button" onclick="hideCatalog()">← Voltar</button>
                     <h2>Catálogo Rogold</h2>
                     <div class="user-roblox-account-info">
-                        <img src="roglux_coins.png" alt="Coins" class="coins-icon">
+                        <img src="imgs/roglux_coins.png" alt="Coins" class="coins-icon">
                         <span id="current-catalog-coins">0</span>
                     </div>
                 </div>
@@ -225,6 +278,7 @@
                             <button class="category-button active" data-category="all">Todos</button>
                             <button class="category-button" data-category="hat">Chapéus</button>
                             <button class="category-button" data-category="face">Rostos</button>
+                            <button class="category-button" data-category="gear">Ferramentas</button>
                         </div>
                         <div class="items-grid" id="catalog-items-grid">
                             <!-- Items will be rendered here by JavaScript -->
@@ -233,26 +287,102 @@
                 </div>
             </section>
 
+            <!-- Item Detail Section -->
+            <section id="item-detail-section" class="hidden">
+                <div class="item-detail-header">
+                    <button class="back-button" onclick="hideItemDetail()">← Voltar ao Catálogo</button>
+                    <h2 id="item-detail-title"></h2>
+                </div>
+
+                <div class="item-detail-content">
+                    <div class="item-detail-image">
+                        <img id="item-detail-img" src="" alt="Item Image">
+                    </div>
+                    <div class="item-detail-info">
+                        <div class="item-description" id="item-detail-description"></div>
+                        <div class="item-stats">
+                            <div class="stat-item">
+                                <span class="stat-number" id="item-purchase-count">0</span>
+                                <span class="stat-label">Compras</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-number" id="item-detail-price">0</span>
+                                <span class="stat-label">GoldBucks</span>
+                            </div>
+                        </div>
+                        <div class="item-detail-actions" id="item-detail-actions">
+                            <!-- Buttons will be added here by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <section class="featured-games" id="featured-games">
-                <h3>Jogos em Destaque</h3>
-                <div class="games-grid" id="games-grid">
-                    <div class="game-card" data-game-title="Natural Disaster Survival">
-                        <div class="game-thumbnail">
-                            <img src="thumbnail1.jpg" alt="Natural Disaster Survival Thumbnail">
-                        </div>
-                        <h4>Natural Disaster Survival</h4>
-                        <button class="play-button" data-game-id="natural_disaster_survival">Jogar</button>
-                        <button class="favorite-toggle-button">Favoritar</button>
-                    </div>
-                    <div class="game-card" data-game-title="Work at a Pizza Place">
-                        <div class="game-thumbnail">
-                            <img src="thumbnail2.jpg" alt="Work at a Pizza Place Thumbnail">
-                        </div>
-                        <h4>Work at a Pizza Place</h4>
-                        <button class="play-button" data-game-id="work_at_pizza_place">Jogar</button>
-                        <button class="favorite-toggle-button">Favoritar</button>
-                    </div>
+                 <h3>Jogos em Destaque</h3>
+                 <div class="games-categories">
+                     <button class="category-button active" data-category="all">Todos</button>
+                     <button class="category-button" data-category="most-liked">Mais Curtidos</button>
+                 </div>
+                 <div class="games-grid" id="games-grid">
                     <!-- Published games will be added here dynamically -->
+                </div>
+            </section>
+
+            <!-- Game Detail Section -->
+            <section id="game-detail-section" class="hidden">
+                <div class="game-detail-header">
+                    <button class="back-button" onclick="hideGameDetail()">← Voltar aos Jogos</button>
+                    <h2 id="game-detail-title">Detalhes do Jogo</h2>
+                </div>
+
+                <div class="game-detail-content">
+                    <div class="game-detail-image">
+                        <img id="game-detail-thumbnail" src="" alt="Game Thumbnail">
+                    </div>
+                    <div class="game-detail-info">
+                        <div class="game-description" id="game-detail-description">No description available.</div>
+                        <div class="game-creator">Criado por: <span id="game-detail-creator">Unknown</span></div>
+                        <div class="game-created-date">Criado em: <span id="game-detail-created-date">Unknown</span></div>
+                        <div class="game-tools-allowed">Ferramentas permitidas: <span id="game-detail-tools-allowed">Sim</span></div>
+                        <div class="game-detail-actions">
+                            <button class="like-button" id="game-detail-like-btn">Like</button>
+                            <button class="dislike-button" id="game-detail-dislike-btn">Dislike</button>
+                            <button class="play-button" id="game-detail-play-btn">Jogar Agora</button>
+                        </div>
+                        <div class="game-stats">
+                            <div class="stat-item">
+                                <span class="stat-number" id="game-detail-likes">0</span>
+                                <span class="stat-label">Curtidas</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-number" id="game-detail-dislikes">0</span>
+                                <span class="stat-label">Não Curtidas</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-number" id="game-detail-playing">0</span>
+                                <span class="stat-label">Jogando</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-number" id="game-detail-visits">0</span>
+                                <span class="stat-label">Visitas</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Creation Board Section -->
+            <section id="creation-board-section" class="hidden">
+                <div class="creation-board-header">
+                    <button class="back-button" onclick="hideCreationBoard()">← Voltar</button>
+                    <h2>Meu Estúdio de Criação</h2>
+                    <button class="primary-button" onclick="createNewGame()">Criar Novo Jogo</button>
+                </div>
+
+                <div class="creation-board-content">
+                    <div class="creation-games-grid" id="creation-games-grid">
+                        <p class="empty-message">Nenhum jogo criado ainda. Clique em "Criar Novo Jogo" para começar!</p>
+                    </div>
                 </div>
             </section>
 

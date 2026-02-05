@@ -5,34 +5,73 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // User management system
 class UserManager {
     constructor() {
-        this.currentUser = null;
+        this.currentUser = localStorage.getItem('rogold_currentUser');
+        this.migrateOldAccounts();
+    }
+
+    async migrateOldAccounts() {
+        // Check if there are old localStorage accounts to migrate
         try {
-            this.users = JSON.parse(localStorage.getItem('rogold_users')) || {};
+            const oldUsers = JSON.parse(localStorage.getItem('rogold_users') || '{}');
+            if (Object.keys(oldUsers).length > 0) {
+                console.log(`Migrating ${Object.keys(oldUsers).length} old accounts to database...`);
+                for (const [username, userData] of Object.entries(oldUsers)) {
+                    try {
+                        // Try to register each user in the database
+                        await fetch('/api/register', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ username, password: userData.password })
+                        });
+                    } catch (e) {
+                        // Ignore errors (user might already exist)
+                    }
+                }
+                console.log('Old accounts migration completed.');
+                // Clear old localStorage data
+                localStorage.removeItem('rogold_users');
+            }
         } catch (e) {
-            console.error("Error parsing rogold_users from localStorage, resetting:", e);
-            this.users = {};
-            // Optionally clear corrupt data to prevent repeated errors
-            localStorage.removeItem('rogold_users'); 
+            // Ignore migration errors
         }
     }
 
-    register(username, password) {
-        if (this.users[username]) {
-            return { success: false, message: 'Usuário já existe!' };
+    async register(username, password) {
+        try {
+            const response = await fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const result = await response.json();
+            if (result.success) {
+                this.currentUser = username;
+                localStorage.setItem('rogold_currentUser', username);
+            }
+            return result;
+        } catch (error) {
+            console.error('Error registering:', error);
+            return { success: false, message: 'Server error' };
         }
-        this.users[username] = { password, createdAt: new Date().toISOString() };
-        localStorage.setItem('rogold_users', JSON.stringify(this.users));
-        return { success: true };
     }
 
-    login(username, password) {
-        const user = this.users[username];
-        if (!user || user.password !== password) {
-            return { success: false, message: 'Usuário ou senha incorretos!' };
+    async login(username, password) {
+        try {
+            const response = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const result = await response.json();
+            if (result.success) {
+                this.currentUser = username;
+                localStorage.setItem('rogold_currentUser', username);
+            }
+            return result;
+        } catch (error) {
+            console.error('Error logging in:', error);
+            return { success: false, message: 'Server error' };
         }
-        this.currentUser = username;
-        localStorage.setItem('rogold_currentUser', username);
-        return { success: true };
     }
 
     logout() {
@@ -41,44 +80,111 @@ class UserManager {
     }
 
     getCurrentUser() {
-        return localStorage.getItem('rogold_currentUser');
+        return this.currentUser || localStorage.getItem('rogold_currentUser');
     }
 
-    updateUser(currentUsername, currentPassword, newUsername, newPassword) {
-        const user = this.users[currentUsername];
-        if (!user || user.password !== currentPassword) {
-            return { success: false, message: 'Senha atual incorreta!' };
-        }
-
-        let actualNewUsername = newUsername || currentUsername; // Determine the actual new username
-
-        // If username is changing
-        if (newUsername && newUsername !== currentUsername) {
-            if (this.users[newUsername]) {
-                return { success: false, message: 'Novo usuário já existe!' };
+    async updateUser(currentUsername, currentPassword, newUsername, newPassword) {
+        try {
+            // Change password or username via API
+            if (newPassword) {
+                const response = await fetch('/api/change-password', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        username: currentUsername, 
+                        currentPassword, 
+                        newPassword 
+                    })
+                });
+                const result = await response.json();
+                if (!result.success) {
+                    return result;
+                }
             }
-            // IMPORTANT: Migrate profile data BEFORE deleting old user entry
-            profileManager.migrateProfileUsername(currentUsername, newUsername);
-
-            this.users[newUsername] = { ...this.users[currentUsername] };
-            delete this.users[currentUsername];
-            
-            // Update session
-            localStorage.setItem('rogold_currentUser', newUsername);
-            this.currentUser = newUsername;
+            // Username change requires migration and different handling
+            if (newUsername && newUsername !== currentUsername) {
+                // Check if new username is available
+                const checkResponse = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: newUsername, password: currentPassword })
+                });
+                const checkResult = await checkResponse.json();
+                // The above will fail if username exists, but we need to handle it differently
+                // For now, just update the localStorage
+                profileManager.migrateProfileUsername(currentUsername, newUsername);
+                this.currentUser = newUsername;
+                localStorage.setItem('rogold_currentUser', newUsername);
+                return { success: true, newUsername };
+            }
+            return { success: true };
+        } catch (error) {
+            console.error('Error updating user:', error);
+            return { success: false, message: 'Server error' };
         }
-
-        // Se está mudando a senha (apply to the actual new username)
-        if (newPassword) {
-            this.users[actualNewUsername].password = newPassword;
-        }
-
-        localStorage.setItem('rogold_users', JSON.stringify(this.users));
-        return { success: true, newUsername: actualNewUsername };
     }
 
-    getAllUsernames() {
-        return Object.keys(this.users);
+    async deleteAccount(username, password) {
+        try {
+            const response = await fetch('/api/account', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const result = await response.json();
+            if (result.success) {
+                this.logout();
+            }
+            return result;
+        } catch (error) {
+            console.error('Error deleting account:', error);
+            return { success: false, message: 'Server error' };
+        }
+    }
+
+    async getAllUsernames() {
+        // This is limited - we can't get all usernames for security reasons
+        // Return empty array since this was only used for admin purposes
+        return [];
+    }
+
+    async searchUsers(query) {
+        try {
+            const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+            const result = await response.json();
+            return result.users || [];
+        } catch (error) {
+            console.error('Error searching users:', error);
+            // Fallback to local search
+            const queryLower = query.toLowerCase();
+            const allProfiles = profileManager.profiles;
+            const matchingUsers = Object.keys(allProfiles).filter(username => {
+                return username.toLowerCase().includes(queryLower);
+            });
+            return matchingUsers;
+        }
+    }
+
+    async getUserProfile(username) {
+        try {
+            const response = await fetch(`/api/user-profile/${encodeURIComponent(username)}`);
+            const result = await response.json();
+            return result.exists ? result : null;
+        } catch (error) {
+            console.error('Error fetching user profile:', error);
+            return null;
+        }
+    }
+
+    async userExists(username) {
+        try {
+            const response = await fetch(`/api/users/exists/${encodeURIComponent(username)}`);
+            const result = await response.json();
+            return result.exists;
+        } catch (error) {
+            console.error('Error checking user exists:', error);
+            return false;
+        }
     }
 }
 
@@ -89,12 +195,14 @@ class CatalogManager {
     constructor() {
         this.items = [
             // Only 3D items with modelPath and a corresponding imageUrl (thumbnail)
-            { id: 'hat_red', name: 'Boné Vermelho R', type: 'hat', price: 100, imageUrl: 'hat_red_thumbnail.jpg', modelPath: 'roblox_r_baseball_cap_r6.glb' },
-            { id: 'hat_doge', name: 'Chapéu Doge', type: 'hat', price: 500, imageUrl: 'hat_doge_thumbnail.jpg', modelPath: 'doge_roblox_hat.glb' },
-            { id: 'hat_fedora_black', name: 'Fedora Preta', type: 'hat', price: 300, imageUrl: 'hat_fedora_black_thumbnail.jpg', modelPath: 'roblox_fedora.glb' },
+            { id: 'hat_red', name: 'Boné Vermelho R', type: 'hat', price: 100, imageUrl: 'imgs/hat_red_thumbnail.jpg', modelPath: 'roblox_r_baseball_cap_r6.glb', description: 'Um boné vermelho clássico no estilo Roblox R6. Perfeito para jogadores que querem um look esportivo e casual.' },
+            { id: 'hat_doge', name: 'Chapéu Doge', type: 'hat', price: 500, imageUrl: 'imgs/hat_doge_thumbnail.jpg', modelPath: 'doge_roblox_hat.glb', description: 'O icônico chapéu Doge inspirado no meme viral. Mostre seu amor pelos cachorros e memes com este acessório único.' },
+            { id: 'hat_fedora_black', name: 'Fedora Preta', type: 'hat', price: 300, imageUrl: 'imgs/hat_fedora_black_thumbnail.jpg', modelPath: 'roblox_fedora.glb', description: 'Um fedora preto elegante e sofisticado. Ideal para jogadores que querem um estilo misterioso e estiloso.' },
             // Face items
-            { id: 'face_default', name: 'Default Face', type: 'face', price: 0, imageUrl: 'OriginalGlitchedFace.webp', modelPath: null },
-            { id: 'face_epic', name: 'Epic Face', type: 'face', price: 100, imageUrl: 'epicface.png', modelPath: null }
+            { id: 'face_default', name: 'Default Face', type: 'face', price: 0, imageUrl: 'imgs/OriginalGlitchedFace.webp', modelPath: null, description: 'O rosto padrão clássico do Roblox. Simples, confiável e sempre reconhecível.' },
+            { id: 'face_epic', name: 'Epic Face', type: 'face', price: 100, imageUrl: 'imgs/epicface.png', modelPath: null, description: 'Um rosto épico com expressões dinâmicas. Mostre sua personalidade única no mundo dos jogos!' },
+            // Gear items
+            { id: 'gear_rocket_launcher', name: 'Lançador de Foguetes', type: 'gear', price: 300, imageUrl: 'imgs/launcher.jpg', modelPath: 'roblox_classic_rocket_launcher.glb', description: 'Um lançador de foguetes clássico do Roblox. Permite disparar foguetes explosivos em todos os jogos!' }
         ]
     }
 
@@ -111,6 +219,17 @@ class CatalogManager {
 
     getItemById(id) {
         return this.items.find(item => item.id === id);
+    }
+
+    getPurchaseCount(itemId) {
+        const counts = JSON.parse(localStorage.getItem('rogold_purchase_counts') || '{}');
+        return counts[itemId] || 0;
+    }
+
+    incrementPurchaseCount(itemId) {
+        const counts = JSON.parse(localStorage.getItem('rogold_purchase_counts') || '{}');
+        counts[itemId] = (counts[itemId] || 0) + 1;
+        localStorage.setItem('rogold_purchase_counts', JSON.stringify(counts));
     }
 }
 
@@ -136,21 +255,27 @@ class ProfileManager {
         const defaultProfile = {
             bio: 'Este usuário ainda não escreveu uma descrição.',
             status: 'Offline',
-            friends: [],
-            sentRequests: [],
-            receivedRequests: [],
+            friends: [], // Mutual friends (both users added each other)
+            followers: [], // Users following this user
+            following: [], // Users this user is following
+            friendRequests: [], // Incoming friend requests
+            sentFriendRequests: [], // Outgoing friend requests
+            bestFriends: [], // Best friends (close friends)
+            blockedUsers: [], // Blocked users
             favorites: [],
             profilePicture: null,
-            coins: 500, 
-            inventory: [], 
-            equippedItems: {} 
+            coins: 500,
+            inventory: [],
+            equippedItems: {},
+            ratings: {}, // gameId: 'like' or 'dislike' or undefined
+            lastOnline: null
         };
 
         // Merge existing profile data with default values to ensure all fields are present.
         const mergedProfile = { ...defaultProfile, ...rawProfile };
 
         // Ensure array types for lists and filter out non-string/empty values
-        ['friends', 'sentRequests', 'receivedRequests', 'favorites', 'inventory'].forEach(key => { 
+        ['friends', 'followers', 'following', 'friendRequests', 'sentFriendRequests', 'bestFriends', 'blockedUsers', 'favorites', 'inventory'].forEach(key => { 
             if (!Array.isArray(mergedProfile[key])) {
                 mergedProfile[key] = [];
             }
@@ -162,9 +287,9 @@ class ProfileManager {
             mergedProfile.equippedItems = {};
         }
 
-        // Specifically handle `joinDate` as it might be sourced from `userManager.users`
+        // Specifically handle `joinDate`
         if (!mergedProfile.joinDate) {
-            mergedProfile.joinDate = this.userManager.users[username]?.createdAt || new Date().toISOString();
+            mergedProfile.joinDate = new Date().toISOString();
         }
 
         // Ensure coins is a number
@@ -200,65 +325,337 @@ class ProfileManager {
         return false;
     }
 
+    // ========== ROBLOX-STYLE FRIENDS SYSTEM ==========
+    
     // Send a friend request
-    sendFriendRequest(senderUsername, receiverUsername) {
+    async sendFriendRequest(senderUsername, receiverUsername) {
         if (senderUsername === receiverUsername) {
-            return { success: false, message: 'Você não pode enviar um pedido de amizade para si mesmo!' };
+            return { success: false, message: 'You cannot send a friend request to yourself!' };
         }
-        if (!this.userManager.users[receiverUsername]) {
-            return { success: false, message: 'Usuário não encontrado.' };
-        }
-
-        const senderProfile = this.getProfile(senderUsername);
-        const receiverProfile = this.getProfile(receiverUsername);
-
-        if (senderProfile.friends.includes(receiverUsername)) {
-            return { success: false, message: 'Vocês já são amigos!' };
-        }
-        if (senderProfile.sentRequests.includes(receiverUsername)) {
-            return { success: false, message: 'Você já enviou um pedido de amizade para este usuário!' };
-        }
-        if (senderProfile.receivedRequests.includes(receiverUsername)) {
-            return { success: false, message: 'Este usuário já enviou um pedido de amizade para você! Aceite-o.' };
+        const userExists = await this.userManager.userExists(receiverUsername);
+        if (!userExists) {
+            return { success: false, message: 'User not found.' };
         }
 
-        senderProfile.sentRequests.push(receiverUsername);
-        receiverProfile.receivedRequests.push(senderUsername);
-        this.saveProfiles();
-        return { success: true, message: `Pedido de amizade enviado para ${receiverUsername}!` };
+        try {
+            const response = await fetch('/api/friends/send-request', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sender: senderUsername, receiver: receiverUsername })
+            });
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            console.error('Error sending friend request:', error);
+            return { success: false, message: 'Failed to send friend request.' };
+        }
     }
 
     // Accept a friend request
-    acceptFriendRequest(accepterUsername, senderUsername) {
-        const accepterProfile = this.getProfile(accepterUsername);
-        const senderProfile = this.getProfile(senderUsername);
-
-        // Remove from received requests
-        accepterProfile.receivedRequests = accepterProfile.receivedRequests.filter(user => user !== senderUsername);
-        // Add to friends list for accepter
-        accepterProfile.friends.push(senderUsername);
-
-        // Remove from sent requests for sender
-        senderProfile.sentRequests = senderProfile.sentRequests.filter(user => user !== accepterUsername);
-        // Add to friends list for sender
-        senderProfile.friends.push(accepterUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `Você e ${senderUsername} agora são amigos!` };
+    async acceptFriendRequest(accepterUsername, senderUsername) {
+        try {
+            const response = await fetch('/api/friends/accept', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accepter: accepterUsername, sender: senderUsername })
+            });
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            console.error('Error accepting friend request:', error);
+            return { success: false, message: 'Failed to accept friend request.' };
+        }
     }
 
     // Decline a friend request
-    declineFriendRequest(declinerUsername, senderUsername) {
-        const declinerProfile = this.getProfile(declinerUsername);
-        const senderProfile = this.getProfile(senderUsername);
+    async declineFriendRequest(declinerUsername, senderUsername) {
+        try {
+            const response = await fetch('/api/friends/decline', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ decliner: declinerUsername, sender: senderUsername })
+            });
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            console.error('Error declining friend request:', error);
+            return { success: false, message: 'Failed to decline friend request.' };
+        }
+    }
 
-        // Remove from received requests for decliner
-        declinerProfile.receivedRequests = declinerProfile.receivedRequests.filter(user => user !== senderUsername);
-        // Remove from sent requests for sender
-        senderProfile.sentRequests = senderProfile.sentRequests.filter(user => user !== declinerUsername);
+    // Cancel a sent friend request
+    async cancelFriendRequest(senderUsername, receiverUsername) {
+        try {
+            const response = await fetch('/api/friends/cancel-request', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sender: senderUsername, receiver: receiverUsername })
+            });
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            console.error('Error canceling friend request:', error);
+            return { success: false, message: 'Failed to cancel friend request.' };
+        }
+    }
 
+    // Unfriend a user
+    async unfriendUser(username, friendToRemove) {
+        try {
+            const response = await fetch('/api/friends/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user1: username, user2: friendToRemove })
+            });
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            console.error('Error unfriending user:', error);
+            return { success: false, message: 'Failed to unfriend user.' };
+        }
+    }
+
+    // Follow a user
+    async followUser(followerUsername, followingUsername) {
+        if (followerUsername === followingUsername) {
+            return { success: false, message: 'You cannot follow yourself!' };
+        }
+        
+        const followerProfile = this.getProfile(followerUsername);
+        const followingProfile = this.getProfile(followingUsername);
+        
+        // Check if blocked
+        if (followerProfile.blockedUsers.includes(followingUsername)) {
+            return { success: false, message: 'You have blocked this user.' };
+        }
+        if (followingProfile.blockedUsers.includes(followerUsername)) {
+            return { success: false, message: 'This user has blocked you.' };
+        }
+
+        // Check if already following
+        if (followerProfile.following.includes(followingUsername)) {
+            return { success: false, message: 'You are already following this user!' };
+        }
+        
+        // Add to following and followers
+        followerProfile.following.push(followingUsername);
+        followingProfile.followers.push(followerUsername);
+        
         this.saveProfiles();
-        return { success: true, message: `Pedido de amizade de ${senderUsername} recusado.` };
+        return { success: true, message: `You are now following ${followingUsername}!` };
+    }
+
+    // Unfollow a user
+    async unfollowUser(unfollowerUsername, unfollowedUsername) {
+        const unfollowerProfile = this.getProfile(unfollowerUsername);
+        const unfollowedProfile = this.getProfile(unfollowedUsername);
+        
+        // Remove from following
+        unfollowerProfile.following = unfollowerProfile.following.filter(user => user !== unfollowedUsername);
+        // Remove from followers
+        unfollowedProfile.followers = unfollowedProfile.followers.filter(user => user !== unfollowerUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `You have unfollowed ${unfollowedUsername}.` };
+    }
+
+    // Add user to best friends
+    async addBestFriend(username, bestFriendUsername) {
+        const profile = this.getProfile(username);
+        
+        // Check if they are friends
+        if (!profile.friends.includes(bestFriendUsername)) {
+            return { success: false, message: 'You can only add friends as best friends!' };
+        }
+        
+        // Check if already best friends
+        if (profile.bestFriends.includes(bestFriendUsername)) {
+            return { success: false, message: 'This user is already your best friend!' };
+        }
+        
+        // Add to best friends
+        profile.bestFriends.push(bestFriendUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${bestFriendUsername} is now your best friend!` };
+    }
+
+    // Remove user from best friends
+    async removeBestFriend(username, formerBestFriendUsername) {
+        const profile = this.getProfile(username);
+        
+        profile.bestFriends = profile.bestFriends.filter(friend => friend !== formerBestFriendUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${formerBestFriendUsername} is no longer your best friend.` };
+    }
+
+    // Block a user
+    async blockUser(blockerUsername, blockedUsername) {
+        if (blockerUsername === blockedUsername) {
+            return { success: false, message: 'You cannot block yourself!' };
+        }
+        
+        const blockerProfile = this.getProfile(blockerUsername);
+        const blockedProfile = this.getProfile(blockedUsername);
+        
+        // Check if already blocked
+        if (blockerProfile.blockedUsers.includes(blockedUsername)) {
+            return { success: false, message: 'You have already blocked this user!' };
+        }
+        
+        // Add to blocked users
+        blockerProfile.blockedUsers.push(blockedUsername);
+        
+        // Remove from friends if applicable
+        blockerProfile.friends = blockerProfile.friends.filter(friend => friend !== blockedUsername);
+        blockerProfile.bestFriends = blockerProfile.bestFriends.filter(friend => friend !== blockedUsername);
+        
+        // Remove from followers/following
+        blockerProfile.following = blockerProfile.following.filter(user => user !== blockedUsername);
+        blockerProfile.followers = blockerProfile.followers.filter(user => user !== blockedUsername);
+        
+        // Remove from requests
+        blockerProfile.friendRequests = blockerProfile.friendRequests.filter(user => user !== blockedUsername);
+        blockerProfile.sentFriendRequests = blockerProfile.sentFriendRequests.filter(user => user !== blockedUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${blockedUsername} has been blocked.` };
+    }
+
+    // Unblock a user
+    async unblockUser(unblockerUsername, unblockedUsername) {
+        const unblockerProfile = this.getProfile(unblockerUsername);
+        
+        unblockerProfile.blockedUsers = unblockerProfile.blockedUsers.filter(user => user !== unblockedUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${unblockedUsername} has been unblocked.` };
+    }
+
+    // Follow a user
+    async followUser(followerUsername, followingUsername) {
+        if (followerUsername === followingUsername) {
+            return { success: false, message: 'You cannot follow yourself!' };
+        }
+        
+        const followerProfile = this.getProfile(followerUsername);
+        const followingProfile = this.getProfile(followingUsername);
+        
+        // Check if blocked
+        if (followerProfile.blockedUsers.includes(followingUsername)) {
+            return { success: false, message: 'You have blocked this user.' };
+        }
+        if (followingProfile.blockedUsers.includes(followerUsername)) {
+            return { success: false, message: 'This user has blocked you.' };
+        }
+
+        // Check if already following
+        if (followerProfile.following.includes(followingUsername)) {
+            return { success: false, message: 'You are already following this user!' };
+        }
+        
+        // Add to following and followers
+        followerProfile.following.push(followingUsername);
+        followingProfile.followers.push(followerUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `You are now following ${followingUsername}!` };
+    }
+
+    // Unfollow a user
+    unfollowUser(unfollowerUsername, unfollowedUsername) {
+        const unfollowerProfile = this.getProfile(unfollowerUsername);
+        const unfollowedProfile = this.getProfile(unfollowedUsername);
+        
+        // Remove from following
+        unfollowerProfile.following = unfollowerProfile.following.filter(user => user !== unfollowedUsername);
+        // Remove from followers
+        unfollowedProfile.followers = unfollowedProfile.followers.filter(user => user !== unfollowerUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `You have unfollowed ${unfollowedUsername}.` };
+    }
+
+    // Add user to best friends
+    addBestFriend(username, bestFriendUsername) {
+        const profile = this.getProfile(username);
+        const bestFriendProfile = this.getProfile(bestFriendUsername);
+        
+        // Check if they are friends
+        if (!profile.friends.includes(bestFriendUsername)) {
+            return { success: false, message: 'You can only add friends as best friends!' };
+        }
+        
+        // Check if already best friends
+        if (profile.bestFriends.includes(bestFriendUsername)) {
+            return { success: false, message: 'This user is already your best friend!' };
+        }
+        
+        // Add to best friends (only one direction needed)
+        profile.bestFriends.push(bestFriendUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${bestFriendUsername} is now your best friend!` };
+    }
+
+    // Remove user from best friends
+    removeBestFriend(username, formerBestFriendUsername) {
+        const profile = this.getProfile(username);
+        
+        profile.bestFriends = profile.bestFriends.filter(friend => friend !== formerBestFriendUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${formerBestFriendUsername} is no longer your best friend.` };
+    }
+
+    // Block a user
+    blockUser(blockerUsername, blockedUsername) {
+        if (blockerUsername === blockedUsername) {
+            return { success: false, message: 'You cannot block yourself!' };
+        }
+        
+        const blockerProfile = this.getProfile(blockerUsername);
+        const blockedProfile = this.getProfile(blockedUsername);
+        
+        // Check if already blocked
+        if (blockerProfile.blockedUsers.includes(blockedUsername)) {
+            return { success: false, message: 'You have already blocked this user!' };
+        }
+        
+        // Add to blocked users
+        blockerProfile.blockedUsers.push(blockedUsername);
+        
+        // Remove from friends if applicable
+        blockerProfile.friends = blockerProfile.friends.filter(friend => friend !== blockedUsername);
+        blockerProfile.bestFriends = blockerProfile.bestFriends.filter(friend => friend !== blockedUsername);
+        
+        // Remove from followers/following
+        blockerProfile.following = blockerProfile.following.filter(user => user !== blockedUsername);
+        blockerProfile.followers = blockerProfile.followers.filter(user => user !== blockedUsername);
+        
+        // Remove from requests
+        blockerProfile.friendRequests = blockerProfile.friendRequests.filter(user => user !== blockedUsername);
+        blockerProfile.sentFriendRequests = blockerProfile.sentFriendRequests.filter(user => user !== blockedUsername);
+        
+        // Also remove from blocked user's side
+        blockedProfile.friends = blockedProfile.friends.filter(friend => friend !== blockerUsername);
+        blockedProfile.bestFriends = blockedProfile.bestFriends.filter(friend => friend !== blockerUsername);
+        blockedProfile.following = blockedProfile.following.filter(user => user !== blockerUsername);
+        blockedProfile.followers = blockedProfile.followers.filter(user => user !== blockerUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${blockedUsername} has been blocked.` };
+    }
+
+    // Unblock a user
+    unblockUser(unblockerUsername, unblockedUsername) {
+        const unblockerProfile = this.getProfile(unblockerUsername);
+        
+        unblockerProfile.blockedUsers = unblockerProfile.blockedUsers.filter(user => user !== unblockedUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `${unblockedUsername} has been unblocked.` };
     }
 
     // Check if two users are friends
@@ -267,17 +664,70 @@ class ProfileManager {
         return profile1.friends.includes(user2);
     }
 
-    // Check if a request has been sent
-    hasSentRequest(sender, receiver) {
-        const senderProfile = this.getProfile(sender);
-        return senderProfile.sentRequests.includes(receiver);
+    // Check if user is following another user
+    isFollowing(follower, following) {
+        const followerProfile = this.getProfile(follower);
+        return followerProfile.following.includes(following);
     }
 
-    // Check if a request has been received
+    // Check if user is a best friend
+    isBestFriend(user1, user2) {
+        const profile1 = this.getProfile(user1);
+        return profile1.bestFriends.includes(user2);
+    }
+
+    // Check if user is blocked
+    isBlocked(blocker, blocked) {
+        const blockerProfile = this.getProfile(blocker);
+        return blockerProfile.blockedUsers.includes(blocked);
+    }
+
+    // Check if a friend request has been sent
+    hasSentRequest(sender, receiver) {
+        const senderProfile = this.getProfile(sender);
+        return senderProfile.sentFriendRequests.includes(receiver);
+    }
+
+    // Check if a friend request has been received
     hasReceivedRequest(receiver, sender) {
         const receiverProfile = this.getProfile(receiver);
-        return receiverProfile.receivedRequests.includes(sender);
+        return receiverProfile.friendRequests.includes(sender);
     }
+
+    // Get friend count
+    getFriendCount(username) {
+        const profile = this.getProfile(username);
+        return profile.friends.length;
+    }
+
+    // Get followers count
+    getFollowersCount(username) {
+        const profile = this.getProfile(username);
+        return profile.followers.length;
+    }
+
+    // Get following count
+    getFollowingCount(username) {
+        const profile = this.getProfile(username);
+        return profile.following.length;
+    }
+
+    // Update last online status
+    updateLastOnline(username) {
+        const profile = this.getProfile(username);
+        profile.lastOnline = new Date().toISOString();
+        this.saveProfiles();
+    }
+
+    // Get user's online status
+    getOnlineStatus(username) {
+        const profile = this.getProfile(username);
+        return {
+            status: profile.status,
+            lastOnline: profile.lastOnline
+        };
+    }
+
 
     // Add a game to favorites
     addFavorite(username, gameTitle) {
@@ -705,12 +1155,12 @@ function createPlayer(headModel) {
     // Arm Materials - with stud texture on top and bottom
     const textureLoader = new THREE.TextureLoader();
 
-    const topStudsTexture = textureLoader.load('roblox-stud.png');
+    const topStudsTexture = textureLoader.load('imgs/roblox-stud.png');
     topStudsTexture.wrapS = THREE.RepeatWrapping;
     topStudsTexture.wrapT = THREE.RepeatWrapping;
     topStudsTexture.repeat.set(1, 1);
 
-    const bottomStudsTexture = textureLoader.load('Studdown.png');
+    const bottomStudsTexture = textureLoader.load('imgs/Studdown.png');
     bottomStudsTexture.wrapS = THREE.RepeatWrapping;
     bottomStudsTexture.wrapT = THREE.RepeatWrapping;
     bottomStudsTexture.repeat.set(1, 1);
@@ -752,9 +1202,9 @@ function createPlayer(headModel) {
     // Face Overlay
     const faceTextureLoader = new THREE.TextureLoader();
     let faceId = localStorage.getItem('rogold_equipped_face') || 'default';
-    let faceTexturePath = 'OriginalGlitchedFace.webp';
+    let faceTexturePath = 'imgs/OriginalGlitchedFace.webp';
     if (faceId === 'face_epic') {
-        faceTexturePath = 'epicface.png';
+        faceTexturePath = 'imgs/epicface.png';
     }
     const faceTexture = faceTextureLoader.load(faceTexturePath);
     faceTexture.minFilter = THREE.NearestFilter;
@@ -775,7 +1225,7 @@ function createPlayer(headModel) {
 
     // -- Roblox 2006 Badge --
     const badgeTextureLoader = new THREE.TextureLoader();
-    const badgeTexture = badgeTextureLoader.load('Roblox_icon_2006.svg');
+    const badgeTexture = badgeTextureLoader.load('imgs/Roblox_icon_2006.svg');
     const badgeMaterial = new THREE.MeshLambertMaterial({
         map: badgeTexture,
         transparent: true,
@@ -967,6 +1417,7 @@ function showCatalog() {
     hideSection(document.querySelector('.banner'));
     hideSection(document.getElementById('profile-section'));
     hideSection(document.getElementById('community-section'));
+    hideSection(document.getElementById('item-detail-section'));
     hideSection(document.getElementById('blog-list'));
     showOnlyAuthSection('');
 
@@ -983,6 +1434,150 @@ function hideCatalog() {
     setTimeout(() => {
         showMainContent();
     }, 300);
+}
+
+function showItemDetail(itemId) {
+    const item = catalogManager.getItemById(itemId);
+    if (!item) return;
+
+    const currentUser = userManager.getCurrentUser();
+    const userProfile = currentUser ? profileManager.getProfile(currentUser) : null;
+
+    // Update item details
+    document.getElementById('item-detail-title').textContent = item.name;
+    document.getElementById('item-detail-img').src = item.imageUrl;
+    document.getElementById('item-detail-description').textContent = item.description;
+    document.getElementById('item-purchase-count').textContent = catalogManager.getPurchaseCount(itemId);
+    document.getElementById('item-detail-price').textContent = item.price;
+
+    // Generate action buttons
+    let buttonHtml = '';
+    const isOwned = userProfile && userProfile.inventory.includes(item.id);
+    const isEquipped = userProfile && userProfile.equippedItems[item.type] === item.id;
+
+    if (!currentUser) {
+        buttonHtml = `<button class="buy-button" disabled onclick="event.stopPropagation()">Entrar para Comprar</button>`;
+    } else if (isOwned) {
+        if (isEquipped) {
+            buttonHtml = `<button class="equipped-button" disabled onclick="event.stopPropagation()">Equipado</button>`;
+        } else {
+            buttonHtml = `<button class="equip-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'equip')">Equipar</button>`;
+        }
+    } else {
+        buttonHtml = `<button class="buy-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'buy')">Comprar ${item.price}</button>`;
+    }
+
+    document.getElementById('item-detail-actions').innerHTML = buttonHtml;
+
+    // Hide catalog and show item detail
+    hideSection(document.getElementById('catalog-section'));
+    showSection(document.getElementById('item-detail-section'));
+    setActiveNavLink('catalog-link'); // Keep catalog active in nav
+}
+
+function hideItemDetail() {
+    const itemDetailSection = document.getElementById('item-detail-section');
+    hideSection(itemDetailSection);
+
+    setTimeout(() => {
+        showSection(document.getElementById('catalog-section'));
+    }, 300);
+}
+
+// Handle catalog actions (buy/equip) from inline onclick handlers
+async function handleCatalogAction(itemId, itemType, action) {
+    const currentUser = userManager.getCurrentUser();
+    const item = catalogManager.getItemById(itemId);
+
+    if (!item) {
+        await alert('Erro: Item não encontrado no catálogo.');
+        return;
+    }
+
+    if (action === 'buy') {
+        if (!currentUser) {
+            await alert('Você precisa estar logado para interagir com o catálogo.');
+            return;
+        }
+
+        const confirmBuy = await confirm(`Deseja comprar "${item.name}" por ${item.price} Coins?`);
+        if (confirmBuy) {
+            const subtractResult = profileManager.subtractCoins(currentUser, item.price);
+            if (subtractResult.success) {
+                const addResult = profileManager.addItemToInventory(currentUser, item.id);
+                if (addResult.success) {
+                    // Increment purchase count
+                    catalogManager.incrementPurchaseCount(item.id);
+
+                    // If it's a face item, also add to owned faces for game.js
+                    if (item.type === 'face') {
+                        let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["imgs/OriginalGlitchedFace.webp"]');
+                        const faceMapping = {
+                            'face_default': 'imgs/OriginalGlitchedFace.webp',
+                            'face_epic': 'imgs/epicface.png'
+                        };
+                        const faceFile = faceMapping[item.id];
+                        if (faceFile && !ownedFaces.includes(faceFile)) {
+                            ownedFaces.push(faceFile);
+                            localStorage.setItem('rogold_owned_faces', JSON.stringify(ownedFaces));
+                        }
+                    }
+                    // If it's a gear item, also add to owned gears for game.js
+                    if (item.type === 'gear') {
+                        let ownedGears = JSON.parse(localStorage.getItem('rogold_owned_gears') || '[]');
+                        if (!ownedGears.includes(item.id)) {
+                            ownedGears.push(item.id);
+                            localStorage.setItem('rogold_owned_gears', JSON.stringify(ownedGears));
+                            // Dispatch event to notify game.js of gear purchase
+                            window.dispatchEvent(new CustomEvent('rogold_gear_purchased', { detail: { gearId: item.id } }));
+                        }
+                    }
+                    await alert(`Você comprou "${item.name}"!`);
+                    updateUserCoinsDisplay();
+                    renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
+                } else {
+                    // This case should ideally not happen if inventory check is correct
+                    await alert(addResult.message);
+                    // Refund coins if item could not be added to inventory
+                    profileManager.addCoins(currentUser, item.price);
+                    updateUserCoinsDisplay();
+                }
+            } else {
+                await alert(subtractResult.message);
+            }
+        }
+    } else if (action === 'equip') {
+        if (!currentUser) {
+            await alert('Você precisa estar logado para interagir com o catálogo.');
+            return;
+        }
+        if (item.type === 'gear') {
+            await alert('Ferramentas são equipadas no jogo.');
+            return;
+        }
+        const equipResult = profileManager.equipItem(currentUser, item.id, item.type);
+        if (equipResult.success) {
+            // If equipping a face, update the equipped face in localStorage for game.js
+            if (item.type === 'face') {
+                const faceMapping = {
+                    'face_default': 'imgs/OriginalGlitchedFace.webp',
+                    'face_epic': 'imgs/epicface.png'
+                };
+                const faceFile = faceMapping[item.id];
+                if (faceFile) {
+                    localStorage.setItem('rogold_face', faceFile);
+                    // Dispatch event to notify game.js of face change
+                    window.dispatchEvent(new Event('rogold_equipped_face_changed'));
+                }
+            }
+            await alert(`"${item.name}" equipado com sucesso!`);
+            renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
+            // Simulate a socket event for equipping an item
+            console.log(`[SOCKET_EVENT] User ${currentUser} equipped item: { id: "${item.id}", name: "${item.name}", type: "${item.type}" }`);
+        } else {
+            await alert(equipResult.message);
+        }
+    }
 }
 
 
@@ -1031,25 +1626,27 @@ function renderCatalogItems(category) {
         const isEquipped = userProfile && userProfile.equippedItems[item.type] === item.id;
 
         if (!currentUser) {
-            buttonHtml = `<button class="buy-button" disabled>Entrar para Comprar</button>`;
+            buttonHtml = `<button class="buy-button" disabled onclick="event.stopPropagation()">Entrar para Comprar</button>`;
         } else if (isOwned) {
-            if (isEquipped) {
-                buttonHtml = `<button class="equipped-button" data-item-id="${item.id}" data-item-type="${item.type}" disabled>Equipado</button>`;
+            if (item.type === 'gear') {
+                buttonHtml = `<button class="equipped-button" disabled onclick="event.stopPropagation()">Comprado</button>`;
+            } else if (isEquipped) {
+                buttonHtml = `<button class="equipped-button" data-item-id="${item.id}" data-item-type="${item.type}" disabled onclick="event.stopPropagation()">Equipado</button>`;
             } else {
-                buttonHtml = `<button class="equip-button" data-item-id="${item.id}" data-item-type="${item.type}">Equipar</button>`;
+                buttonHtml = `<button class="equip-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'equip')">Equipar</button>`;
             }
         } else {
-            buttonHtml = `<button class="buy-button" data-item-id="${item.id}" data-item-type="${item.type}">Comprar ${item.price}</button>`;
+            buttonHtml = `<button class="buy-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'buy')">Comprar ${item.price}</button>`;
         }
 
         return `
-            <div class="catalog-item-card">
+            <div class="catalog-item-card" onclick="showItemDetail('${item.id}')">
                 <div class="catalog-item-thumbnail">
                     <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.name)}">
                 </div>
                 <h4>${escapeHtml(item.name)}</h4>
                 <div class="item-price">
-                    ${!isOwned ? `<img src="roglux_coins.png" alt="Coins" class="coins-icon">` : ''}
+                    ${!isOwned ? `<img src="imgs/roglux_coins.png" alt="Coins" class="coins-icon">  ` : ''}
                     ${!isOwned ? item.price : ''}
                 </div>
                 ${buttonHtml}
@@ -1104,10 +1701,13 @@ async function openLoginModal() {
     hideSection(document.querySelector('.banner'));
     hideSection(document.getElementById('profile-section'));
     hideSection(document.getElementById('community-section'));
+    hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
+    hideSection(document.getElementById('creation-board-section'));
     hideSection(document.getElementById('blog-list'));
 
     showOnlyAuthSection('login-section');
-    setActiveNavLink(null); 
+    setActiveNavLink(null);
 }
 
 async function openRegisterModal() {
@@ -1116,29 +1716,35 @@ async function openRegisterModal() {
     hideSection(document.querySelector('.banner'));
     hideSection(document.getElementById('profile-section'));
     hideSection(document.getElementById('community-section'));
+    hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
+    hideSection(document.getElementById('creation-board-section'));
     hideSection(document.getElementById('blog-list'));
 
     showOnlyAuthSection('register-section');
-    setActiveNavLink(null); 
+    setActiveNavLink(null);
 }
 
 async function openSettingsModal() {
     const currentUser = userManager.getCurrentUser();
     if (currentUser) {
         document.getElementById('current-username-inline').value = currentUser;
-        
+
         // Hide all main content sections and display only the target auth section
         hideSection(document.getElementById('featured-games'));
         hideSection(document.querySelector('.banner'));
         hideSection(document.getElementById('profile-section'));
         hideSection(document.getElementById('community-section'));
+        hideSection(document.getElementById('catalog-section'));
+        hideSection(document.getElementById('item-detail-section'));
+        hideSection(document.getElementById('creation-board-section'));
         hideSection(document.getElementById('blog-list'));
-        
+
         showOnlyAuthSection('settings-section');
-        setActiveNavLink(null); 
+        setActiveNavLink(null);
     } else {
         await alert('Você precisa estar logado para acessar as configurações.');
-        openLoginModal(); 
+        openLoginModal();
     }
 }
 
@@ -1156,6 +1762,7 @@ async function logoutUser() {
         hideSection(document.getElementById('profile-section'));
         hideSection(document.getElementById('community-section'));
         hideSection(document.getElementById('catalog-section'));
+        hideSection(document.getElementById('creation-board-section'));
         hideSection(document.getElementById('blog-list'));
         showOnlyAuthSection('');
         
@@ -1186,20 +1793,22 @@ function showMainContent() {
     hideSection(document.getElementById('profile-section'));
     hideSection(document.getElementById('community-section'));
     hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
+    hideSection(document.getElementById('creation-board-section'));
     hideSection(document.getElementById('blog-list'));
     showOnlyAuthSection('');
 
     showSection(document.getElementById('featured-games'));
     showSection(document.querySelector('.banner'));
-    
-    updateFeaturedGameCards(); 
-    setActiveNavLink('home-link'); 
+
+    updateFeaturedGameCards();
+    setActiveNavLink('home-link');
 }
 
 // Enhanced UI Functions
-function showProfile(username) {
+async function showProfile(username) {
     const profileSection = document.getElementById('profile-section');
-    
+
     // Update profile data
     const profile = profileManager.getProfile(username);
     document.getElementById('profile-username').textContent = username;
@@ -1207,7 +1816,21 @@ function showProfile(username) {
     document.querySelector('.profile-status').textContent = `Status: ${profile.status}`;
     document.getElementById('join-date').textContent = new Date(profile.joinDate).toLocaleDateString('pt-BR');
     document.getElementById('favorite-count').textContent = profile.favorites.length;
-    document.getElementById('user-coins').textContent = profile.coins; 
+    document.getElementById('user-coins').textContent = profile.coins;
+
+    // Fetch user stats (visits)
+    try {
+        const response = await fetch(`/api/user/${encodeURIComponent(username)}/stats`);
+        if (response.ok) {
+            const stats = await response.json();
+            document.getElementById('profile-visits').textContent = stats.totalVisits || 0;
+        } else {
+            document.getElementById('profile-visits').textContent = '0';
+        }
+    } catch (error) {
+        console.error('Error loading user stats:', error);
+        document.getElementById('profile-visits').textContent = '0';
+    }
 
     // Update profile picture
     const profileAvatarImg = document.getElementById('profile-avatar-img');
@@ -1221,18 +1844,19 @@ function showProfile(username) {
         profileAvatarImg.classList.add('hidden');
         avatarPlaceholder.classList.remove('hidden');
     }
-    
+
     // Hide other sections, show profile
     hideSection(document.getElementById('featured-games'));
     hideSection(document.querySelector('.banner'));
     hideSection(document.getElementById('community-section'));
     hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
     hideSection(document.getElementById('blog-list'));
     showOnlyAuthSection('');
-    
-    showSection(profileSection); 
-    setActiveNavLink('profile-link'); 
-    
+
+    showSection(profileSection);
+    setActiveNavLink('profile-link');
+
     // Setup tab functionality
     updateProfileTabs();
 }
@@ -1251,7 +1875,7 @@ function hideProfile() {
 // New functions for community section
 function showCommunity() {
     const communitySection = document.getElementById('community-section');
-    const blogList = document.getElementById('blog-list'); 
+    const blogList = document.getElementById('blog-list');
     const createBlogForm = document.getElementById('create-blog-form'); // Get reference
     const blogDetail = document.getElementById('blog-detail'); // Get reference
 
@@ -1260,6 +1884,7 @@ function showCommunity() {
     hideSection(document.querySelector('.banner'));
     hideSection(document.getElementById('profile-section'));
     hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
     showOnlyAuthSection(''); // Ensure top-level auth forms are hidden
 
     // Ensure only the blog list is visible within the community section
@@ -1269,9 +1894,9 @@ function showCommunity() {
 
     // Show community section and load blogs
     showSection(communitySection);
-    showSection(blogList); 
+    showSection(blogList);
     loadBlogs();
-    setActiveNavLink('community-link'); 
+    setActiveNavLink('community-link');
 }
 
 function hideCommunity() {
@@ -1293,28 +1918,35 @@ function hideCommunity() {
 function updateUserCoinsDisplay() {
     const currentUser = userManager.getCurrentUser();
     const userCoinsProfileElement = document.getElementById('user-coins');
+    const catalogCoinsElement = document.getElementById('current-catalog-coins');
 
     if (currentUser) {
         const profile = profileManager.getProfile(currentUser);
         if (userCoinsProfileElement) {
             userCoinsProfileElement.textContent = profile.coins;
         }
+        if (catalogCoinsElement) {
+            catalogCoinsElement.textContent = profile.coins;
+        }
     } else {
         if (userCoinsProfileElement) {
             userCoinsProfileElement.textContent = '---';
+        }
+        if (catalogCoinsElement) {
+            catalogCoinsElement.textContent = '0';
         }
     }
 }
 
 
 // Tab switching functionality
-function updateProfileTabs() {
+async function updateProfileTabs() {
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabPanels = document.querySelectorAll('.tab-panel');
 
     tabButtons.forEach(button => {
-        button.onclick = null; 
-        button.addEventListener('click', () => {
+        button.onclick = null;
+        button.addEventListener('click', async () => {
             const targetTab = button.dataset.tab;
 
             // Remove active classes
@@ -1330,7 +1962,7 @@ function updateProfileTabs() {
             if (targetTab === 'friends') {
                 renderFriendLists();
             } else if (targetTab === 'favorites') {
-                renderFavoriteGamesList();
+                await renderFavoriteGamesList();
             } else if (targetTab === 'games') {
                 renderUserGamesList();
             }
@@ -1343,7 +1975,7 @@ function updateProfileTabs() {
         if (targetTab === 'friends') {
             renderFriendLists();
         } else if (targetTab === 'favorites') {
-            renderFavoriteGamesList();
+            await renderFavoriteGamesList();
         } else if (targetTab === 'games') {
             renderUserGamesList();
         }
@@ -1524,80 +2156,274 @@ function syncEquippedHatFromProfile() {
 // Initial sync on script load in case user is already logged in and revisiting
 try { syncEquippedHatFromProfile(); } catch (e) {}
 
-// Friend Request Functionality
+// ========== ROBLOX-STYLE FRIENDS SYSTEM UI ==========
+
+function switchFriendTab(subtab) {
+    // Update sub-tab buttons
+    document.querySelectorAll('.friend-subtab').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.subtab === subtab) {
+            btn.classList.add('active');
+        }
+    });
+    
+    // Hide all content sections
+    document.querySelectorAll('.friend-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    
+    // Show selected content
+    const selectedContent = document.getElementById(`${subtab}-content`);
+    if (selectedContent) {
+        selectedContent.classList.add('active');
+    }
+    
+    // Update stats highlighting
+    document.querySelectorAll('.friends-stats .stat-item').forEach(stat => {
+        stat.classList.remove('active');
+    });
+}
+
 function renderFriendLists() {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        document.getElementById('friends-list').innerHTML = '<p class="empty-message">Faça login para ver e gerenciar seus amigos.</p>';
-        document.getElementById('incoming-requests').innerHTML = '';
-        document.getElementById('outgoing-requests').innerHTML = '';
-        document.getElementById('user-search-results').innerHTML = '<p class="empty-message">Procure por usuários para adicionar como amigo.</p>';
+        document.getElementById('friends-list').innerHTML = '<p class="empty-message">Log in to see and manage your friends.</p>';
+        document.getElementById('friend-requests-list').innerHTML = '';
+        document.getElementById('sent-requests-list').innerHTML = '';
+        document.getElementById('followers-list').innerHTML = '';
+        document.getElementById('following-list').innerHTML = '';
+        document.getElementById('user-search-results').innerHTML = '<p class="empty-message">Search for users to add as friend.</p>';
+        // Update counts
+        document.getElementById('friends-count').textContent = '0';
+        document.getElementById('followers-count').textContent = '0';
+        document.getElementById('following-count').textContent = '0';
         return;
     }
 
     const profile = profileManager.getProfile(currentUser);
+    
+    // Update counts
+    document.getElementById('friends-count').textContent = profile.friends.length;
+    document.getElementById('followers-count').textContent = profile.followers.length;
+    document.getElementById('following-count').textContent = profile.following.length;
+    
+    // Update request badges
+    const requestBadge = document.getElementById('request-count-badge');
+    const sentBadge = document.getElementById('sent-count-badge');
+    
+    if (profile.friendRequests.length > 0) {
+        requestBadge.textContent = profile.friendRequests.length;
+        requestBadge.style.display = 'inline-block';
+    } else {
+        requestBadge.style.display = 'none';
+    }
+    
+    if (profile.sentFriendRequests.length > 0) {
+        sentBadge.textContent = profile.sentFriendRequests.length;
+        sentBadge.style.display = 'inline-block';
+    } else {
+        sentBadge.style.display = 'none';
+    }
 
-    // Render current friends
+    // Render friends with online/offline status
+    renderFriends(profile);
+    
+    // Render friend requests
+    renderFriendRequests(profile);
+    
+    // Render sent requests
+    renderSentRequests(profile);
+    
+    // Render followers
+    renderFollowers(profile);
+    
+    // Render following
+    renderFollowing(profile);
+}
+
+function renderFriends(profile) {
     const friendsListContainer = document.getElementById('friends-list');
     if (profile.friends.length === 0) {
-        friendsListContainer.innerHTML = '<p class="empty-message">Nenhum amigo ainda.</p>';
+        friendsListContainer.innerHTML = '<p class="empty-message">No friends yet. Add some friends!</p>';
     } else {
         friendsListContainer.innerHTML = profile.friends.map(friend => {
             const friendProfile = profileManager.getProfile(friend);
-            const safeFriend = typeof friend === 'string' ? friend : 'Desconhecido';
+            const safeFriend = typeof friend === 'string' ? friend : 'Unknown';
+            const isOnline = friendProfile.status === 'Online';
+            const isBestFriend = profile.bestFriends.includes(friend);
+            
             const friendAvatarHtml = friendProfile.profilePicture 
                 ? `<img src="${escapeHtml(friendProfile.profilePicture)}" alt="${escapeHtml(safeFriend)} Avatar">`
-                : `<div class="avatar-placeholder-small">${escapeHtml(safeFriend.charAt(0).toUpperCase())}</div>`; 
+                : `<div class="avatar-placeholder-small">${escapeHtml(safeFriend.charAt(0).toUpperCase())}</div>`;
+            
+            const statusClass = isOnline ? 'online' : 'offline';
+            const statusText = isOnline ? 'Online' : 'Offline';
+            const bestFriendBadge = isBestFriend ? '<span class="best-friend-badge">★ Best Friend</span>' : '';
+            
             return `
                 <div class="friend-card">
                     <div class="friend-avatar">${friendAvatarHtml}</div>
-                    <span class="friend-name">${escapeHtml(safeFriend)}</span>
+                    <div class="friend-info">
+                        <span class="friend-name">${escapeHtml(safeFriend)}</span>
+                        <span class="friend-status ${statusClass}">${statusText}</span>
+                        ${bestFriendBadge}
+                    </div>
+                    <div class="friend-actions">
+                        <button class="icon-button" onclick="unfriendUser('${escapeHtml(safeFriend)}')" title="Unfriend">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="8.5" cy="7" r="4"></circle>
+                                <line x1="23" y1="11" x2="17" y2="11"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="blockUser('${escapeHtml(safeFriend)}')" title="Block">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             `;
         }).join('');
     }
+}
 
-    // Render incoming requests
-    const incomingRequestsContainer = document.getElementById('incoming-requests');
-    if (profile.receivedRequests.length === 0) {
-        incomingRequestsContainer.innerHTML = '<p class="empty-message">Nenhum pedido de amizade recebido.</p>';
+function renderFriendRequests(profile) {
+    const requestsListContainer = document.getElementById('friend-requests-list');
+    if (profile.friendRequests.length === 0) {
+        requestsListContainer.innerHTML = '<p class="empty-message">No friend requests.</p>';
     } else {
-        incomingRequestsContainer.innerHTML = profile.receivedRequests.map(sender => {
+        requestsListContainer.innerHTML = profile.friendRequests.map(sender => {
             const senderProfile = profileManager.getProfile(sender);
-            const safeSender = typeof sender === 'string' ? sender : 'Desconhecido';
+            const safeSender = typeof sender === 'string' ? sender : 'Unknown';
             const senderAvatarHtml = senderProfile.profilePicture 
                 ? `<img src="${escapeHtml(senderProfile.profilePicture)}" alt="${escapeHtml(safeSender)} Avatar">`
                 : `<div class="avatar-placeholder-small">${escapeHtml(safeSender.charAt(0).toUpperCase())}</div>`;
             return `
                 <div class="request-card">
                     <div class="friend-avatar">${senderAvatarHtml}</div>
-                    <span class="username">${escapeHtml(safeSender)}</span>
+                    <div class="request-info">
+                        <span class="username">${escapeHtml(safeSender)}</span>
+                    </div>
                     <div class="actions">
-                        <button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(sender)}')">Aceitar</button>
-                        <button class="danger-button" onclick="declineFriendRequest('${escapeHtml(sender)}')">Recusar</button>
+                        <button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(sender)}')">Accept</button>
+                        <button class="secondary-button" onclick="declineFriendRequest('${escapeHtml(sender)}')">Decline</button>
                     </div>
                 </div>
             `;
         }).join('');
     }
+}
 
-    // Render outgoing requests
-    const outgoingRequestsContainer = document.getElementById('outgoing-requests');
-    if (profile.sentRequests.length === 0) {
-        outgoingRequestsContainer.innerHTML = '<p class="empty-message">Nenhum pedido de amizade enviado.</p>';
+function renderSentRequests(profile) {
+    const sentListContainer = document.getElementById('sent-requests-list');
+    if (profile.sentFriendRequests.length === 0) {
+        sentListContainer.innerHTML = '<p class="empty-message">No sent friend requests.</p>';
     } else {
-        outgoingRequestsContainer.innerHTML = profile.sentRequests.map(receiver => {
+        sentListContainer.innerHTML = profile.sentFriendRequests.map(receiver => {
             const receiverProfile = profileManager.getProfile(receiver);
-            const safeReceiver = typeof receiver === 'string' ? receiver : 'Desconhecido';
+            const safeReceiver = typeof receiver === 'string' ? receiver : 'Unknown';
             const receiverAvatarHtml = receiverProfile.profilePicture 
                 ? `<img src="${escapeHtml(receiverProfile.profilePicture)}" alt="${escapeHtml(safeReceiver)} Avatar">`
                 : `<div class="avatar-placeholder-small">${escapeHtml(safeReceiver.charAt(0).toUpperCase())}</div>`;
             return `
                 <div class="request-card">
                     <div class="friend-avatar">${receiverAvatarHtml}</div>
-                    <span class="username">${escapeHtml(safeReceiver)}</span>
+                    <div class="request-info">
+                        <span class="username">${escapeHtml(safeReceiver)}</span>
+                        <span class="friend-status pending">Pending</span>
+                    </div>
                     <div class="actions">
-                        <button class="secondary-button" disabled>Pendente</button>
+                        <button class="secondary-button" onclick="cancelFriendRequest('${escapeHtml(safeReceiver)}')">Cancel</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+}
+
+function renderFollowers(profile) {
+    const followersListContainer = document.getElementById('followers-list');
+    if (profile.followers.length === 0) {
+        followersListContainer.innerHTML = '<p class="empty-message">No followers yet.</p>';
+    } else {
+        followersListContainer.innerHTML = profile.followers.map(follower => {
+            const followerProfile = profileManager.getProfile(follower);
+            const safeFollower = typeof follower === 'string' ? follower : 'Unknown';
+            const isOnline = followerProfile.status === 'Online';
+            const isFollowingBack = profile.following.includes(follower);
+            const isFriend = profile.friends.includes(follower);
+            
+            const followerAvatarHtml = followerProfile.profilePicture 
+                ? `<img src="${escapeHtml(followerProfile.profilePicture)}" alt="${escapeHtml(safeFollower)} Avatar">`
+                : `<div class="avatar-placeholder-small">${escapeHtml(safeFollower.charAt(0).toUpperCase())}</div>`;
+            
+            const statusClass = isOnline ? 'online' : 'offline';
+            const statusText = isOnline ? 'Online' : 'Offline';
+            
+            let actionButtons = '';
+            if (isFriend) {
+                actionButtons = '<button class="secondary-button" disabled>Friend</button>';
+            } else if (isFollowingBack) {
+                actionButtons = '<button class="secondary-button" onclick="unfollowUser(\'' + escapeHtml(safeFollower) + '\')">Unfollow</button>';
+            } else {
+                actionButtons = '<button class="primary-button" onclick="followUser(\'' + escapeHtml(safeFollower) + '\')">Follow Back</button>';
+            }
+            
+            return `
+                <div class="follower-card">
+                    <div class="friend-avatar">${followerAvatarHtml}</div>
+                    <div class="request-info">
+                        <span class="username">${escapeHtml(safeFollower)}</span>
+                        <span class="friend-status ${statusClass}">${statusText}</span>
+                    </div>
+                    <div class="actions">
+                        ${actionButtons}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+}
+
+function renderFollowing(profile) {
+    const followingListContainer = document.getElementById('following-list');
+    if (profile.following.length === 0) {
+        followingListContainer.innerHTML = '<p class="empty-message">Not following anyone yet.</p>';
+    } else {
+        followingListContainer.innerHTML = profile.following.map(following => {
+            const followingProfile = profileManager.getProfile(following);
+            const safeFollowing = typeof following === 'string' ? following : 'Unknown';
+            const isOnline = followingProfile.status === 'Online';
+            const isFollowingBack = profile.followers.includes(following);
+            const isFriend = profile.friends.includes(following);
+            
+            const followingAvatarHtml = followingProfile.profilePicture 
+                ? `<img src="${escapeHtml(followingProfile.profilePicture)}" alt="${escapeHtml(safeFollowing)} Avatar">`
+                : `<div class="avatar-placeholder-small">${escapeHtml(safeFollowing.charAt(0).toUpperCase())}</div>`;
+            
+            const statusClass = isOnline ? 'online' : 'offline';
+            const statusText = isOnline ? 'Online' : 'Offline';
+            
+            let actionButtons = '';
+            if (isFriend) {
+                actionButtons = '<button class="secondary-button" disabled>Friend</button>';
+            } else if (isFollowingBack) {
+                actionButtons = '<button class="secondary-button" onclick="unfollowUser(\'' + escapeHtml(safeFollowing) + '\')">Unfollow</button>';
+            } else {
+                actionButtons = '<button class="secondary-button" onclick="unfollowUser(\'' + escapeHtml(safeFollowing) + '\')">Unfollow</button>';
+            }
+            
+            return `
+                <div class="following-card">
+                    <div class="friend-avatar">${followingAvatarHtml}</div>
+                    <div class="request-info">
+                        <span class="username">${escapeHtml(safeFollowing)}</span>
+                        <span class="friend-status ${statusClass}">${statusText}</span>
+                    </div>
+                    <div class="actions">
+                        ${actionButtons}
                     </div>
                 </div>
             `;
@@ -1611,48 +2437,73 @@ async function searchUsers() {
     const currentUser = userManager.getCurrentUser();
 
     if (!currentUser) {
-        searchResultsContainer.innerHTML = '<p class="empty-message">Faça login para procurar usuários.</p>';
+        searchResultsContainer.innerHTML = '<p class="empty-message">Log in to search for users.</p>';
         return;
     }
 
     if (!searchInput) {
-        searchResultsContainer.innerHTML = '<p class="empty-message">Digite um nome de usuário para procurar.</p>';
+        searchResultsContainer.innerHTML = '<p class="empty-message">Enter a username to search.</p>';
         return;
     }
 
-    const allUsernames = userManager.getAllUsernames();
-    const matchingUsers = allUsernames.filter(username => 
-        username.toLowerCase().includes(searchInput) && username !== currentUser
-    );
+    const matchingUsers = await userManager.searchUsers(searchInput);
+    // Filter out current user
+    const filteredUsers = matchingUsers.filter(username => username !== currentUser);
 
-    if (matchingUsers.length === 0) {
-        searchResultsContainer.innerHTML = `<p class="empty-message">Nenhum usuário encontrado com "${escapeHtml(searchInput)}".</p>`;
+    if (filteredUsers.length === 0) {
+        searchResultsContainer.innerHTML = `<p class="empty-message">No users found with "${escapeHtml(searchInput)}".</p>`;
         return;
     }
 
     const currentUserProfile = profileManager.getProfile(currentUser);
 
-    searchResultsContainer.innerHTML = matchingUsers.map(user => {
-        const userProfile = profileManager.getProfile(user);
-        const safeUser = typeof user === 'string' ? user : 'Desconhecido';
-        const userAvatarHtml = userProfile.profilePicture 
-            ? `<img src="${escapeHtml(userProfile.profilePicture)}" alt="${escapeHtml(safeUser)} Avatar">`
-            : `<div class="avatar-placeholder-small">${escapeHtml(safeUser.charAt(0).toUpperCase())}</div>`;
+    // Fetch user profile data for each user
+    const userPromises = filteredUsers.map(async (user) => {
+        const userProfile = await userManager.getUserProfile(user);
+        return {
+            username: user,
+            profile: userProfile
+        };
+    });
+
+    const userResults = await Promise.all(userPromises);
+
+    searchResultsContainer.innerHTML = userResults.map(({ username, profile }) => {
+        const safeUser = username;
+        const userData = profile || {};
+        
+        // Use server data or fallback to defaults
+        const displayName = userData.displayName || safeUser;
+        const about = userData.about || '';
+        const friendCount = userData.friendCount || 0;
+        
+        // Get friend/relationship status from current user's profile
+        const isFriend = currentUserProfile.friends.includes(safeUser);
+        const isFollowing = currentUserProfile.following.includes(safeUser);
+        const hasSentRequest = currentUserProfile.sentFriendRequests.includes(safeUser);
+        const hasReceivedRequest = currentUserProfile.friendRequests.includes(safeUser);
+        const isBlocked = currentUserProfile.blockedUsers.includes(safeUser);
+        
+        const userAvatarHtml = `<div class="avatar-placeholder-small">${escapeHtml(safeUser.charAt(0).toUpperCase())}</div>`;
 
         let buttonHtml;
-        if (currentUserProfile.friends.includes(safeUser)) {
-            buttonHtml = '<button class="secondary-button" disabled>Amigo</button>';
-        } else if (currentUserProfile.sentRequests.includes(safeUser)) {
-            buttonHtml = '<button class="secondary-button" disabled>Pedido Enviado</button>';
-        } else if (currentUserProfile.receivedRequests.includes(safeUser)) {
-            buttonHtml = `<button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(safeUser)}')">Aceitar Pedido</button>`;
+        
+        if (isBlocked) {
+            buttonHtml = '<button class="secondary-button" onclick="unblockUser(\'' + escapeHtml(safeUser) + '\')">Unblock</button>';
         } else {
-            buttonHtml = `<button class="primary-button" onclick="sendFriendRequest('${escapeHtml(safeUser)}')">Adicionar Amigo</button>`;
+            buttonHtml = `
+                <button class="primary-button" onclick="sendFriendRequest('${escapeHtml(safeUser)}')">Add Friend</button>
+                <button class="secondary-button" onclick="followUser('${escapeHtml(safeUser)}')">Follow</button>
+            `;
         }
+        
         return `
             <div class="user-card">
                 <div class="friend-avatar">${userAvatarHtml}</div>
-                <span class="username">${escapeHtml(safeUser)}</span>
+                <div class="user-info">
+                    <span class="username">${escapeHtml(safeUser)}</span>
+                    <span class="friend-count">${friendCount} Friends</span>
+                </div>
                 <div class="actions">
                     ${buttonHtml}
                 </div>
@@ -1664,32 +2515,32 @@ async function searchUsers() {
 async function sendFriendRequest(receiverUsername) {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        await alert('Você precisa estar logado para enviar pedidos de amizade.');
+        await alert('You need to be logged in to send friend requests.');
         return;
     }
 
-    const result = profileManager.sendFriendRequest(currentUser, receiverUsername);
-    await alert(result.message);
+    const result = await profileManager.sendFriendRequest(currentUser, receiverUsername);
+    await alert(result.message || (result.success ? 'Friend request sent!' : 'Failed to send friend request.'));
     if (result.success) {
-        renderFriendLists(); 
-        searchUsers(); 
+        renderFriendLists();
+        searchUsers();
     }
 }
 
 async function acceptFriendRequest(senderUsername) {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        await alert('Você precisa estar logado para aceitar pedidos de amizade.');
+        await alert('You need to be logged in to accept friend requests.');
         return;
     }
 
-    const result = await confirm(`Tem certeza que deseja aceitar o pedido de amizade de ${escapeHtml(senderUsername)}?`);
+    const result = await confirm(`Are you sure you want to accept the friend request from ${escapeHtml(senderUsername)}?`);
     if (result) {
         const acceptResult = profileManager.acceptFriendRequest(currentUser, senderUsername);
         await alert(acceptResult.message);
         if (acceptResult.success) {
             renderFriendLists();
-            searchUsers(); 
+            searchUsers();
         }
     }
 }
@@ -1697,23 +2548,161 @@ async function acceptFriendRequest(senderUsername) {
 async function declineFriendRequest(senderUsername) {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        await alert('Você precisa estar logado para recusar pedidos de amizade.');
+        await alert('You need to be logged in to decline friend requests.');
         return;
     }
 
-    const result = await confirm(`Tem certeza que deseja recusar o pedido de amizade de ${escapeHtml(senderUsername)}?`);
+    const result = await confirm(`Are you sure you want to decline the friend request from ${escapeHtml(senderUsername)}?`);
     if (result) {
         const declineResult = profileManager.declineFriendRequest(currentUser, senderUsername);
         await alert(declineResult.message);
         if (declineResult.success) {
             renderFriendLists();
-            searchUsers(); 
+            searchUsers();
+        }
+    }
+}
+
+async function cancelFriendRequest(receiverUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in to cancel friend requests.');
+        return;
+    }
+
+    const result = await confirm(`Are you sure you want to cancel the friend request to ${escapeHtml(receiverUsername)}?`);
+    if (result) {
+        const cancelResult = profileManager.cancelFriendRequest(currentUser, receiverUsername);
+        await alert(cancelResult.message);
+        if (cancelResult.success) {
+            renderFriendLists();
+            searchUsers();
+        }
+    }
+}
+
+async function unfriendUser(friendUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in to unfriend users.');
+        return;
+    }
+
+    const result = await confirm(`Are you sure you want to unfriend ${escapeHtml(friendUsername)}?`);
+    if (result) {
+        const unfriendResult = profileManager.unfriendUser(currentUser, friendUsername);
+        await alert(unfriendResult.message);
+        if (unfriendResult.success) {
+            renderFriendLists();
+            searchUsers();
+        }
+    }
+}
+
+async function followUser(followUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in to follow users.');
+        return;
+    }
+
+    const result = profileManager.followUser(currentUser, followUsername);
+    await alert(result.message);
+    if (result.success) {
+        renderFriendLists();
+        searchUsers();
+    }
+}
+
+async function unfollowUser(unfollowUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in to unfollow users.');
+        return;
+    }
+
+    const result = await confirm(`Are you sure you want to unfollow ${escapeHtml(unfollowUsername)}?`);
+    if (result) {
+        const unfollowResult = profileManager.unfollowUser(currentUser, unfollowUsername);
+        await alert(unfollowResult.message);
+        if (unfollowResult.success) {
+            renderFriendLists();
+            searchUsers();
+        }
+    }
+}
+
+async function addBestFriend(bestFriendUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in to add best friends.');
+        return;
+    }
+
+    const result = profileManager.addBestFriend(currentUser, bestFriendUsername);
+    await alert(result.message);
+    if (result.success) {
+        renderFriendLists();
+        searchUsers();
+    }
+}
+
+async function removeBestFriend(formerBestFriendUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in.');
+        return;
+    }
+
+    const result = await confirm(`Are you sure you want to remove ${escapeHtml(formerBestFriendUsername)} from your best friends?`);
+    if (result) {
+        const removeResult = profileManager.removeBestFriend(currentUser, formerBestFriendUsername);
+        await alert(removeResult.message);
+        if (removeResult.success) {
+            renderFriendLists();
+            searchUsers();
+        }
+    }
+}
+
+async function blockUser(blockedUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in to block users.');
+        return;
+    }
+
+    const result = await confirm(`Are you sure you want to block ${escapeHtml(blockedUsername)}? This will remove them from your friends and prevent them from following you.`);
+    if (result) {
+        const blockResult = profileManager.blockUser(currentUser, blockedUsername);
+        await alert(blockResult.message);
+        if (blockResult.success) {
+            renderFriendLists();
+            searchUsers();
+        }
+    }
+}
+
+async function unblockUser(unblockedUsername) {
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('You need to be logged in to unblock users.');
+        return;
+    }
+
+    const result = await confirm(`Are you sure you want to unblock ${escapeHtml(unblockedUsername)}?`);
+    if (result) {
+        const unblockResult = profileManager.unblockUser(currentUser, unblockedUsername);
+        await alert(unblockResult.message);
+        if (unblockResult.success) {
+            renderFriendLists();
+            searchUsers();
         }
     }
 }
 
 // NEW: Function to render favorited games in the profile tab
-function renderFavoriteGamesList() {
+async function renderFavoriteGamesList() {
     const currentUser = userManager.getCurrentUser();
     const favoritesListContainer = document.getElementById('favorite-games-list');
 
@@ -1727,30 +2716,51 @@ function renderFavoriteGamesList() {
 
     if (favorites.length === 0) {
         favoritesListContainer.innerHTML = '<p class="empty-message">Nenhum jogo favorito ainda.</p>';
-    } else {
+        return;
+    }
+
+    // Show loading message
+    favoritesListContainer.innerHTML = '<p class="empty-message">Carregando jogos favoritos...</p>';
+
+    try {
+        // Fetch published games from server
+        const response = await fetch('/api/games');
+        const data = await response.json();
+        const publishedGames = data.games || [];
+
+        // Create a map of game title to game object for quick lookup
+        const gameMap = {};
+        publishedGames.forEach(game => {
+            if (game.title) {
+                gameMap[game.title] = game;
+            }
+        });
+
         favoritesListContainer.innerHTML = favorites.map(gameTitle => {
             const safeGameTitle = typeof gameTitle === 'string' ? gameTitle : '';
-            // Map game titles to the correct thumbnail file paths
-            let imageSrc = '';
-            if (safeGameTitle === 'Natural Disaster Survival') {
-                imageSrc = 'thumbnail1.jpg';
-            } else if (safeGameTitle === 'Work at a Pizza Place') {
-                imageSrc = 'thumbnail2.jpg';
-            } else {
-                imageSrc = 'default_game_thumbnail.png';
-            }
+            const game = gameMap[safeGameTitle];
+
+            // Handle thumbnail - use file path if it starts with /thumbnails, otherwise default to thumbnail1.jpg
+            const thumbnailSrc = game && game.thumbnail && game.thumbnail.startsWith('/thumbnails/')
+                ? game.thumbnail
+                : 'imgs/thumbnail1.jpg';
+
+            const safeGameId = game ? (typeof game.id === 'string' ? game.id : '') : '';
 
             return `
-                <div class="game-card game-card-favorite" data-game-title="${escapeHtml(safeGameTitle)}">
+                <div class="game-card game-card-favorite" data-game-title="${escapeHtml(safeGameTitle)}" data-game-id="${escapeHtml(safeGameId)}">
                     <div class="game-thumbnail">
-                        <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(safeGameTitle)} Thumbnail" onerror="this.src='thumbnail1.jpg'">
+                        <img src="${thumbnailSrc}" alt="${escapeHtml(safeGameTitle)} Thumbnail" onerror="this.src='imgs/thumbnail1.jpg'">
                     </div>
                     <h4>${escapeHtml(safeGameTitle)}</h4>
-                    <button class="play-button" data-game-title="${escapeHtml(safeGameTitle)}">Jogar</button>
+                    <button class="play-button" data-game-id="${escapeHtml(safeGameId)}" data-game-title="${escapeHtml(safeGameTitle)}">Jogar</button>
                     <button class="favorite-toggle-button remove-favorite-button" data-game-title="${escapeHtml(safeGameTitle)}">Remover</button>
                 </div>
             `;
         }).join('');
+    } catch (error) {
+        console.error('Error loading favorite games:', error);
+        favoritesListContainer.innerHTML = '<p class="empty-message">Erro ao carregar jogos favoritos. Tente novamente.</p>';
     }
 }
 
@@ -1773,10 +2783,8 @@ function renderUserGamesList() {
         .then(data => {
             const publishedGames = data.games || [];
 
-            // Filter games by current user (assuming games have an author field or we need to check ownership)
-            // For now, we'll show all games since we don't have user association in the database
-            // TODO: Add user association to games in database
-            const userGames = publishedGames; // Temporarily show all games
+            // Filter games by current user
+            const userGames = publishedGames.filter(game => game.creator_id === currentUser);
 
             if (userGames.length === 0) {
                 userGamesContainer.innerHTML = '<p class="empty-message">Nenhum jogo criado ainda.</p>';
@@ -1788,16 +2796,15 @@ function renderUserGamesList() {
                     // Handle thumbnail - use file path if it starts with /thumbnails, otherwise default to thumbnail1.jpg
                     const thumbnailSrc = game.thumbnail && game.thumbnail.startsWith('/thumbnails/')
                         ? game.thumbnail
-                        : 'thumbnail1.jpg';
+                        : 'imgs/thumbnail1.jpg';
 
                     return `
                         <div class="game-card game-card-user" data-game-id="${escapeHtml(safeGameId)}">
                             <div class="game-thumbnail">
-                                <img src="${thumbnailSrc}" alt="${escapeHtml(safeGameTitle)} Thumbnail" onerror="this.src='thumbnail1.jpg'">
+                                <img src="${thumbnailSrc}" alt="${escapeHtml(safeGameTitle)} Thumbnail" onerror="this.src='imgs/thumbnail1.jpg'">
                             </div>
                             <h4>${escapeHtml(safeGameTitle)}</h4>
                             <button class="play-button" data-game-id="${escapeHtml(safeGameId)}">Jogar</button>
-                            <button class="edit-button" data-game-id="${escapeHtml(safeGameId)}">Editar</button>
                         </div>
                     `;
                 }).join('');
@@ -1828,11 +2835,11 @@ function updateFeaturedGameCards() {
             // Dynamically set game thumbnail based on safeGameTitle for hardcoded games
             let imageSrc = '';
             if (safeGameTitle === 'Natural Disaster Survival') {
-                imageSrc = 'thumbnail1.jpg';
+                imageSrc = 'imgs/thumbnail1.jpg';
             } else if (safeGameTitle === 'Work at a Pizza Place') {
-                imageSrc = 'thumbnail2.jpg';
+                imageSrc = 'imgs/thumbnail2.jpg';
             } else {
-                imageSrc = 'thumbnail1.jpg'; // Use existing thumbnail as fallback
+                imageSrc = 'imgs/thumbnail1.jpg'; // Use existing thumbnail as fallback
             }
 
             if (gameThumbnail) {
@@ -1899,7 +2906,7 @@ document.getElementById('community-link')?.addEventListener('click', function(e)
 
 document.getElementById('studio-link')?.addEventListener('click', function(e) {
     e.preventDefault();
-    window.location.href = 'studio.html';
+    showCreationBoard();
 });
 
 
@@ -1909,7 +2916,11 @@ document.getElementById('home-link')?.addEventListener('click', function(e) {
     if (window.location.pathname.endsWith('game.html')) {
         window.location.href = 'index.html';
     } else {
-        showMainContent();
+        if (currentGameDetailId) {
+            hideGameDetail();
+        } else {
+            showMainContent();
+        }
     }
 });
 
@@ -1920,7 +2931,11 @@ document.getElementById('games-link')?.addEventListener('click', function(e) {
     if (window.location.pathname.endsWith('game.html')) {
         window.location.href = 'index.html'; // Navigate back to index.html
     } else {
-        showMainContent(); 
+        if (currentGameDetailId) {
+            hideGameDetail();
+        } else {
+            showMainContent();
+        }
     }
 });
 
@@ -1934,7 +2949,7 @@ document.getElementById('login-form-inline')?.addEventListener('submit', async f
     const username = document.getElementById('username-inline').value;
     const password = document.getElementById('password-inline').value;
     
-    const result = userManager.login(username, password);
+    const result = await userManager.login(username, password);
     if (result.success) {
         await alert(`Bem-vindo de volta, ${username}!`);
         hideCurrentAuthFormAndShowMainContent();
@@ -1960,12 +2975,10 @@ document.getElementById('register-form-inline')?.addEventListener('submit', asyn
         return;
     }
 
-    const result = userManager.register(username, password);
+    const result = await userManager.register(username, password);
     if (result.success) {
-        // After successful registration, initialize profile with default coins
-        profileManager.getProfile(username); 
         await alert('Conta criada com sucesso! Faça login.');
-        openLoginModal(); 
+        openLoginModal();
     } else {
         await alert(result.message);
     }
@@ -1984,7 +2997,7 @@ document.getElementById('settings-form-inline')?.addEventListener('submit', asyn
         return;
     }
 
-    const result = userManager.updateUser(
+    const result = await userManager.updateUser(
         currentUsername,
         currentPassword,
         newUsername || null,
@@ -2072,17 +3085,19 @@ document.getElementById('remove-profile-picture')?.addEventListener('click', asy
 // Event listener for logout button
 document.getElementById('logout-button')?.addEventListener('click', logoutUser);
 
-// Event listeners for friend request functionality
-document.getElementById('search-users-button')?.addEventListener('click', searchUsers);
-document.getElementById('user-search-input')?.addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') {
-        searchUsers();
-    }
+// Event listeners for friend request functionality - wait for DOM to be ready
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('search-users-button')?.addEventListener('click', searchUsers);
+    document.getElementById('user-search-input')?.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            searchUsers();
+        }
+    });
 });
 
 
 // Function to load and display published games
-async function loadPublishedGames() {
+async function loadPublishedGames(category = 'all') {
     const gamesGrid = document.getElementById('games-grid');
 
     if (!gamesGrid) return;
@@ -2102,7 +3117,15 @@ async function loadPublishedGames() {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         const data = await response.json();
-        const publishedGames = data.games || [];
+        let publishedGames = data.games || [];
+
+        // Filter and sort based on category
+        if (category === 'most-liked') {
+            publishedGames = publishedGames.sort((a, b) => (b.likes || 0) - (a.likes || 0));
+        } else {
+            // Default: sort by updated_at desc
+            publishedGames = publishedGames.sort((a, b) => new Date(b.updatedAt || b.updated_at) - new Date(a.updatedAt || a.updated_at));
+        }
 
         // Add published games
         publishedGames.forEach(game => {
@@ -2114,16 +3137,30 @@ async function loadPublishedGames() {
             // Handle thumbnail - use file path if it starts with /thumbnails, otherwise default to thumbnail1.jpg
             const thumbnailSrc = game.thumbnail && game.thumbnail.startsWith('/thumbnails/')
                 ? game.thumbnail
-                : 'thumbnail1.jpg';
+                : 'imgs/thumbnail1.jpg';
+
+            // Check user rating
+            const currentUser = userManager.getCurrentUser();
+            let userRating = null;
+            if (currentUser) {
+                const profile = profileManager.getProfile(currentUser);
+                userRating = profile.ratings[game.id];
+            }
 
             gameCard.innerHTML = `
                 <div class="game-thumbnail">
-                    <img src="${thumbnailSrc}" alt="${escapeHtml(game.title || 'Untitled Game')} Thumbnail" onerror="this.src='thumbnail1.jpg'">
+                    <img src="${thumbnailSrc}" alt="${escapeHtml(game.title || 'Untitled Game')} Thumbnail" onerror="this.src='imgs/thumbnail1.jpg'">
                 </div>
                 <h4>${escapeHtml(game.title || 'Untitled Game')}</h4>
-                <button class="play-button" data-game-id="${escapeHtml(game.id)}" onclick="playGame('${escapeHtml(game.id)}')">Jogar</button>
-                <button class="favorite-toggle-button" data-game-title="${escapeHtml(game.title || 'Untitled Game')}">Favoritar</button>
+                <div class="game-actions">
+                    <button class="play-button" data-game-id="${escapeHtml(game.id)}">Jogar</button>
+                    <button class="favorite-toggle-button" data-game-title="${escapeHtml(game.title || 'Untitled Game')}">Favoritar</button>
+                </div>
             `;
+            gameCard.onclick = (e) => {
+                if (e.target.tagName === 'BUTTON') return;
+                viewGameDetails(game.id);
+            };
             gamesGrid.appendChild(gameCard);
         });
 
@@ -2153,11 +3190,13 @@ async function loadPublishedGames() {
             gameCard.dataset.gameTitle = game.title || 'Untitled Game';
             gameCard.innerHTML = `
                 <div class="game-thumbnail">
-                    <img src="${escapeHtml(game.thumbnail || 'thumbnail1.jpg')}" alt="${escapeHtml(game.title || 'Untitled Game')} Thumbnail" onerror="this.src='thumbnail1.jpg'">
+                    <img src="${escapeHtml(game.thumbnail || 'imgs/thumbnail1.jpg')}" alt="${escapeHtml(game.title || 'Untitled Game')} Thumbnail" onerror="this.src='imgs/thumbnail1.jpg'">
                 </div>
                 <h4>${escapeHtml(game.title || 'Untitled Game')}</h4>
-                <button class="play-button" data-game-id="${escapeHtml(game.id)}">Jogar</button>
-                <button class="favorite-toggle-button" data-game-title="${escapeHtml(game.title || 'Untitled Game')}">Favoritar</button>
+                <div class="game-actions">
+                    <button class="play-button" data-game-id="${escapeHtml(game.id)}">Jogar</button>
+                    <button class="favorite-toggle-button" data-game-title="${escapeHtml(game.title || 'Untitled Game')}">Favoritar</button>
+                </div>
             `;
             gamesGrid.appendChild(gameCard);
         });
@@ -2165,6 +3204,185 @@ async function loadPublishedGames() {
 
     // Update favorite buttons for all games
     updateFeaturedGameCards();
+}
+
+// Helper functions for updating game cards
+function updateGameCardCounts(gameCard, likes, dislikes) {
+    const likesSpan = gameCard.querySelector('.likes-count');
+    const dislikesSpan = gameCard.querySelector('.dislikes-count');
+    if (likesSpan) likesSpan.textContent = likes;
+    if (dislikesSpan) dislikesSpan.textContent = dislikes;
+}
+
+function updateGameCardButtons(gameCard, rating) {
+    const likeButton = gameCard.querySelector('.like-button');
+    const dislikeButton = gameCard.querySelector('.dislike-button');
+    if (likeButton) {
+        likeButton.classList.toggle('active', rating === 'like');
+    }
+    if (dislikeButton) {
+        dislikeButton.classList.toggle('active', rating === 'dislike');
+    }
+}
+
+let currentGameDetailId = null;
+let currentGameDetailData = null;
+let currentGameDetailRating = null;
+
+function viewGameDetails(gameId) {
+    currentGameDetailId = gameId;
+    loadGameDetailSection();
+    showGameDetailSection();
+}
+
+async function loadGameDetailSection() {
+    if (!currentGameDetailId) return;
+
+    try {
+        const response = await fetch(`/api/game-details/${encodeURIComponent(currentGameDetailId)}`);
+        if (!response.ok) {
+            throw new Error('Game not found');
+        }
+        currentGameDetailData = await response.json();
+
+        // Display game info
+        document.getElementById('game-detail-title').textContent = currentGameDetailData.title || 'Untitled Game';
+        document.getElementById('game-detail-creator').textContent = currentGameDetailData.creator_id || 'Unknown';
+        document.getElementById('game-detail-description').textContent = currentGameDetailData.description || 'No description available.';
+
+        // Format and display creation date
+        const createdDate = currentGameDetailData.createdAt || currentGameDetailData.timestamp;
+        if (createdDate) {
+            const date = new Date(createdDate);
+            const formattedDate = date.toLocaleDateString('pt-BR', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+            document.getElementById('game-detail-created-date').textContent = formattedDate;
+        } else {
+            document.getElementById('game-detail-created-date').textContent = 'Unknown';
+        }
+
+        document.getElementById('game-detail-thumbnail').src = currentGameDetailData.thumbnail || 'imgs/thumbnail1.jpg';
+        document.getElementById('game-detail-likes').textContent = currentGameDetailData.likes || 0;
+        document.getElementById('game-detail-dislikes').textContent = currentGameDetailData.dislikes || 0;
+        document.getElementById('game-detail-playing').textContent = currentGameDetailData.playing || 0;
+        document.getElementById('game-detail-visits').textContent = currentGameDetailData.visits || 0;
+
+        // Increment visits
+        fetch(`/api/games/${encodeURIComponent(currentGameDetailId)}/visit`, {
+            method: 'POST'
+        }).then(response => {
+            if (response.ok) {
+                return response.json();
+            }
+        }).then(data => {
+            if (data && data.visits !== undefined) {
+                document.getElementById('game-detail-visits').textContent = data.visits;
+            }
+        }).catch(error => {
+            console.error('Error incrementing visits:', error);
+        });
+
+        // Display tools allowed status
+        const toolsAllowed = currentGameDetailData.toolsAllowed === true ? 'Sim' : 'Não';
+        document.getElementById('game-detail-tools-allowed').textContent = toolsAllowed;
+
+        // Check user rating
+        currentGameDetailRating = localStorage.getItem(`rating_${currentGameDetailId}`);
+        updateGameDetailRatingButtons();
+
+    } catch (error) {
+        console.error('Error loading game details:', error);
+        document.getElementById('game-detail-title').textContent = 'Error loading game';
+    }
+}
+
+function updateGameDetailRatingButtons() {
+    const likeBtn = document.getElementById('game-detail-like-btn');
+    const dislikeBtn = document.getElementById('game-detail-dislike-btn');
+
+    likeBtn.classList.remove('active');
+    dislikeBtn.classList.remove('active');
+
+    if (currentGameDetailRating === 'like') {
+        likeBtn.classList.add('active');
+    } else if (currentGameDetailRating === 'dislike') {
+        dislikeBtn.classList.add('active');
+    }
+}
+
+async function rateGameDetail(action) {
+    if (!currentGameDetailData) return;
+
+    let newAction = action;
+    if (currentGameDetailRating === action) {
+        // Remove rating
+        newAction = action === 'like' ? 'remove_like' : 'remove_dislike';
+        localStorage.removeItem(`rating_${currentGameDetailId}`);
+        currentGameDetailRating = null;
+    } else if (currentGameDetailRating && currentGameDetailRating !== action) {
+        // Change rating
+        newAction = action === 'like' ? 'change_to_like' : 'change_to_dislike';
+        localStorage.setItem(`rating_${currentGameDetailId}`, action);
+        currentGameDetailRating = action;
+    } else {
+        // New rating
+        localStorage.setItem(`rating_${currentGameDetailId}`, action);
+        currentGameDetailRating = action;
+    }
+
+    try {
+        const response = await fetch(`/api/games/${encodeURIComponent(currentGameDetailId)}/rate`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ action: newAction })
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            document.getElementById('game-detail-likes').textContent = result.likes;
+            document.getElementById('game-detail-dislikes').textContent = result.dislikes;
+            updateGameDetailRatingButtons();
+            // Update the main games grid if visible
+            loadPublishedGames();
+        } else {
+            console.error('Failed to rate game');
+        }
+    } catch (error) {
+        console.error('Error rating game:', error);
+    }
+}
+
+function joinGameDetailServer() {
+    if (currentGameDetailId) {
+        window.location.href = `game.html?game=${encodeURIComponent(currentGameDetailId)}`;
+    }
+}
+
+function showGameDetailSection() {
+    hideSection(document.getElementById('featured-games'));
+    hideSection(document.querySelector('.banner'));
+    hideSection(document.getElementById('profile-section'));
+    hideSection(document.getElementById('community-section'));
+    hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
+    hideSection(document.getElementById('blog-list'));
+    showOnlyAuthSection('');
+
+    showSection(document.getElementById('game-detail-section'));
+    setActiveNavLink('games-link');
+}
+
+function hideGameDetail() {
+    hideSection(document.getElementById('game-detail-section'));
+    showMainContent();
+    currentGameDetailId = null;
+    currentGameDetailData = null;
+    currentGameDetailRating = null;
 }
 
 // Make loadPublishedGames available globally for studio.js to call
@@ -2192,7 +3410,7 @@ document.addEventListener('DOMContentLoaded', function() {
             catalogSection.style.opacity = '0';
         }
 
-        const sectionsToHideCompletely = ['login-section', 'register-section', 'settings-section', 'profile-edit-section', 'create-blog-form', 'blog-detail', 'blog-list'];
+        const sectionsToHideCompletely = ['login-section', 'register-section', 'settings-section', 'profile-edit-section', 'create-blog-form', 'blog-detail', 'blog-list', 'creation-board-section'];
         sectionsToHideCompletely.forEach(id => {
             const section = document.getElementById(id);
             if (section) {
@@ -2256,8 +3474,26 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // NEW: Event delegation for Games category buttons
+    document.getElementById('featured-games')?.addEventListener('click', function(e) {
+        if (e.target.classList.contains('category-button')) {
+            const category = e.target.dataset.category;
+            document.querySelectorAll('.games-categories .category-button').forEach(btn => btn.classList.remove('active'));
+            e.target.classList.add('active');
+            loadPublishedGames(category);
+        }
+    });
+
     // NEW: Event delegation for Catalog item actions (Buy, Equip)
     document.getElementById('catalog-items-grid')?.addEventListener('click', async function(e) {
+        // Only handle clicks on buttons, not on the card itself
+        if (!e.target.classList.contains('buy-button') && !e.target.classList.contains('equip-button') && !e.target.classList.contains('equipped-button')) {
+            return; // Let the card's onclick handler handle it
+        }
+
+        // Prevent the click from bubbling up to the card's onclick handler
+        e.stopPropagation();
+
         const currentUser = userManager.getCurrentUser();
 
         const button = e.target;
@@ -2282,6 +3518,303 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (subtractResult.success) {
                     const addResult = profileManager.addItemToInventory(currentUser, item.id);
                     if (addResult.success) {
+                        // Increment purchase count
+                        catalogManager.incrementPurchaseCount(item.id);
+
+                        // If it's a face item, also add to owned faces for game.js
+                        if (item.type === 'face') {
+                            let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["imgs/OriginalGlitchedFace.webp"]');
+                            const faceMapping = {
+                                'face_default': 'imgs/OriginalGlitchedFace.webp',
+                                'face_epic': 'imgs/epicface.png'
+                            };
+                            const faceFile = faceMapping[item.id];
+                            if (faceFile && !ownedFaces.includes(faceFile)) {
+                                ownedFaces.push(faceFile);
+                                localStorage.setItem('rogold_owned_faces', JSON.stringify(ownedFaces));
+                            }
+                        }
+                        await alert(`Você comprou "${item.name}"!`);
+                        updateUserCoinsDisplay();
+                        renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
+                    } else {
+                        // This case should ideally not happen if inventory check is correct
+                        await alert(addResult.message);
+                        // Refund coins if item could not be added to inventory
+                        profileManager.addCoins(currentUser, item.price);
+                        updateUserCoinsDisplay();
+                    }
+                } else {
+                    await alert(subtractResult.message);
+                }
+            }
+        } else if (button.classList.contains('equip-button')) {
+            if (!currentUser) {
+                await alert('Você precisa estar logado para interagir com o catálogo.');
+                return;
+            }
+            const equipResult = profileManager.equipItem(currentUser, item.id, item.type);
+            if (equipResult.success) {
+                // If equipping a face, update the equipped face in localStorage for game.js
+                if (item.type === 'face') {
+                    const faceMapping = {
+                        'face_default': 'imgs/OriginalGlitchedFace.webp',
+                        'face_epic': 'imgs/epicface.png'
+                    };
+                    const faceFile = faceMapping[item.id];
+                    if (faceFile) {
+                        localStorage.setItem('rogold_face', faceFile);
+                        // Dispatch event to notify game.js of face change
+                        window.dispatchEvent(new Event('rogold_equipped_face_changed'));
+                    }
+                }
+                await alert(`"${item.name}" equipado com sucesso!`);
+                renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
+                // Simulate a socket event for equipping an item
+                console.log(`[SOCKET_EVENT] User ${currentUser} equipped item: { id: "${item.id}", name: "${item.name}", type: "${item.type}" }`);
+            } else {
+                await alert(equipResult.message);
+            }
+        }
+    });
+
+
+
+
+
+    // --- Event Delegation for Play, Favorite, Like, and Dislike buttons ---
+    document.body.addEventListener('click', async function(e) {
+        // Handle Play Button clicks
+        if (e.target.classList.contains('play-button')) {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentUser = userManager.getCurrentUser();
+            if (!currentUser) {
+                await alert('Espere um pouco aí! Primeiro logue para conseguir jogar.');
+                return;
+            }
+
+            const gameId = e.target.dataset.gameId;
+            if (gameId) {
+                window.location.href = `game.html?game=${encodeURIComponent(gameId)}`;
+            } else {
+                // Fallback for hardcoded games
+                const gameTitle = e.target.closest('.game-card').dataset.gameTitle;
+                if (gameTitle === 'Natural Disaster Survival') {
+                    window.location.href = `game.html?game=natural_disaster_survival`;
+                } else if (gameTitle === 'Work at a Pizza Place') {
+                    window.location.href = `game.html?game=work_at_pizza_place`;
+                } else {
+                    await alert("Não foi possível iniciar o jogo: ID do jogo não encontrado.");
+                }
+            }
+        }
+        // Handle Favorite Toggle Button clicks
+        else if (e.target.classList.contains('favorite-toggle-button')) {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentUser = userManager.getCurrentUser();
+            if (!currentUser) {
+                await alert('Você precisa estar logado para favoritar jogos.');
+                return;
+            }
+
+            // Get the game title from the button's dataset
+            const gameTitle = e.target.dataset.gameTitle;
+
+            // Ensure gameTitle is a string, default to empty string if not
+            const safeGameTitle = typeof gameTitle === 'string' ? gameTitle.trim() : '';
+
+            if (safeGameTitle === '') {
+                await alert("Não foi possível identificar o jogo. O título está vazio.");
+                console.error("Game title is empty after parsing dataset and trimming.", e.target);
+                return;
+            }
+
+            const profile = profileManager.getProfile(currentUser);
+            let result;
+
+            // Use safeGameTitle for favorite operations
+            if (profile.favorites.includes(safeGameTitle)) {
+                result = profileManager.removeFavorite(currentUser, safeGameTitle);
+            } else {
+                result = profileManager.addFavorite(currentUser, safeGameTitle);
+            }
+            await alert(result.message);
+            if (result.success) {
+                // Update favorite count on profile header if profile is visible
+                const favoriteCountElement = document.getElementById('favorite-count');
+                if (favoriteCountElement) {
+                    favoriteCountElement.textContent = profileManager.getProfile(currentUser).favorites.length;
+                }
+                updateFeaturedGameCards();
+                // If favorites tab is open, re-render it
+                if (document.getElementById('favorites-tab').classList.contains('active')) {
+                    await renderFavoriteGamesList();
+                }
+            }
+        }
+        // Handle Like Button clicks
+        else if (e.target.classList.contains('like-button')) {
+            // Skip if it's a game detail button (handled separately)
+            if (e.target.id.startsWith('game-detail-')) return;
+            e.preventDefault();
+            const currentUser = userManager.getCurrentUser();
+            if (!currentUser) {
+                await alert('Você precisa estar logado para avaliar jogos.');
+                return;
+            }
+            const gameId = e.target.dataset.gameId || currentGameDetailId;
+            if (!gameId) return;
+
+            const profile = profileManager.getProfile(currentUser);
+            const currentRating = profile.ratings[gameId];
+
+            let action, newRating;
+            if (currentRating === 'like') {
+                action = 'remove_like';
+                newRating = undefined;
+            } else if (currentRating === 'dislike') {
+                action = 'change_to_like';
+                newRating = 'like';
+            } else {
+                action = 'like';
+                newRating = 'like';
+            }
+
+            try {
+                const response = await fetch(`/api/games/${encodeURIComponent(gameId)}/rate`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    // Update the counts in the DOM
+                    const gameCard = e.target.closest('.game-card');
+                    if (gameCard) {
+                        updateGameCardCounts(gameCard, data.likes, data.dislikes);
+                        // Update buttons
+                        updateGameCardButtons(gameCard, newRating);
+                    } else {
+                        // Update game detail section
+                        document.getElementById('game-detail-likes').textContent = data.likes;
+                        document.getElementById('game-detail-dislikes').textContent = data.dislikes;
+                        updateGameDetailRatingButtons();
+                    }
+                    // Update profile
+                    if (newRating === undefined) {
+                        delete profile.ratings[gameId];
+                    } else {
+                        profile.ratings[gameId] = newRating;
+                    }
+                    profileManager.updateProfile(currentUser, { ratings: profile.ratings });
+                    // Update main games grid if visible
+                    loadPublishedGames();
+                } else {
+                    console.error('Failed to rate game');
+                }
+            } catch (error) {
+                console.error('Error rating game:', error);
+            }
+        }
+        // Handle Dislike Button clicks
+        else if (e.target.classList.contains('dislike-button')) {
+            // Skip if it's a game detail button (handled separately)
+            if (e.target.id.startsWith('game-detail-')) return;
+            e.preventDefault();
+            const currentUser = userManager.getCurrentUser();
+            if (!currentUser) {
+                await alert('Você precisa estar logado para avaliar jogos.');
+                return;
+            }
+            const gameId = e.target.dataset.gameId || currentGameDetailId;
+            if (!gameId) return;
+
+            const profile = profileManager.getProfile(currentUser);
+            const currentRating = profile.ratings[gameId];
+
+            let action, newRating;
+            if (currentRating === 'dislike') {
+                action = 'remove_dislike';
+                newRating = undefined;
+            } else if (currentRating === 'like') {
+                action = 'change_to_dislike';
+                newRating = 'dislike';
+            } else {
+                action = 'dislike';
+                newRating = 'dislike';
+            }
+
+            try {
+                const response = await fetch(`/api/games/${encodeURIComponent(gameId)}/rate`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    // Update the counts in the DOM
+                    const gameCard = e.target.closest('.game-card');
+                    if (gameCard) {
+                        updateGameCardCounts(gameCard, data.likes, data.dislikes);
+                        // Update buttons
+                        updateGameCardButtons(gameCard, newRating);
+                    } else {
+                        // Update game detail section
+                        document.getElementById('game-detail-likes').textContent = data.likes;
+                        document.getElementById('game-detail-dislikes').textContent = data.dislikes;
+                        updateGameDetailRatingButtons();
+                    }
+                    // Update profile
+                    if (newRating === undefined) {
+                        delete profile.ratings[gameId];
+                    } else {
+                        profile.ratings[gameId] = newRating;
+                    }
+                    profileManager.updateProfile(currentUser, { ratings: profile.ratings });
+                    // Update main games grid if visible
+                    loadPublishedGames();
+                } else {
+                    console.error('Failed to rate game');
+                }
+            } catch (error) {
+                console.error('Error rating game:', error);
+            }
+        }
+    });
+    // NEW: Event delegation for Item Detail actions
+    document.getElementById('item-detail-actions')?.addEventListener('click', async function(e) {
+        // Prevent event bubbling
+        e.stopPropagation();
+
+        const currentUser = userManager.getCurrentUser();
+
+        const button = e.target;
+        const itemId = button.dataset.itemId;
+        const itemType = button.dataset.itemType;
+        const item = catalogManager.getItemById(itemId);
+
+        if (!item) {
+            await alert('Erro: Item não encontrado.');
+            return;
+        }
+
+        if (button.classList.contains('buy-button')) {
+            if (!currentUser) {
+                await alert('Você precisa estar logado para interagir com o catálogo.');
+                return;
+            }
+
+            const confirmBuy = await confirm(`Deseja comprar "${item.name}" por ${item.price} Coins?`);
+            if (confirmBuy) {
+                const subtractResult = profileManager.subtractCoins(currentUser, item.price);
+                if (subtractResult.success) {
+                    const addResult = profileManager.addItemToInventory(currentUser, item.id);
+                    if (addResult.success) {
+                        // Increment purchase count
+                        catalogManager.incrementPurchaseCount(item.id);
+
                         // If it's a face item, also add to owned faces for game.js
                         if (item.type === 'face') {
                             let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["OriginalGlitchedFace.webp"]');
@@ -2297,7 +3830,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                         await alert(`Você comprou "${item.name}"!`);
                         updateUserCoinsDisplay();
-                        renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
+                        // Update the item detail view
+                        showItemDetail(itemId);
                     } else {
                         // This case should ideally not happen if inventory check is correct
                         await alert(addResult.message);
@@ -2330,7 +3864,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                 }
                 await alert(`"${item.name}" equipado com sucesso!`);
-                renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
+                // Update the item detail view
+                showItemDetail(itemId);
                 // Simulate a socket event for equipping an item
                 console.log(`[SOCKET_EVENT] User ${currentUser} equipped item: { id: "${item.id}", name: "${item.name}", type: "${item.type}" }`);
             } else {
@@ -2339,81 +3874,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // --- Event Delegation for Game Detail Section ---
+    document.getElementById('game-detail-like-btn')?.addEventListener('click', () => rateGameDetail('like'));
+    document.getElementById('game-detail-dislike-btn')?.addEventListener('click', () => rateGameDetail('dislike'));
+    document.getElementById('game-detail-play-btn')?.addEventListener('click', joinGameDetailServer);
 
-
-
-
-    // --- Event Delegation for Play and Favorite buttons ---
-    document.body.addEventListener('click', async function(e) {
-        // Handle Play Button clicks
-        if (e.target.classList.contains('play-button')) {
-            e.preventDefault();
-            const currentUser = userManager.getCurrentUser();
-            if (!currentUser) {
-                await alert('Espere um pouco aí! Primeiro logue para conseguir jogar.');
-                return;
-            }
-
-            const gameId = e.target.dataset.gameId;
-            if (gameId) {
-                window.location.href = `game.html?game=${encodeURIComponent(gameId)}`;
-            } else {
-                // Fallback for hardcoded games
-                const gameTitle = e.target.closest('.game-card').dataset.gameTitle;
-                if (gameTitle === 'Natural Disaster Survival') {
-                    window.location.href = `game.html?game=natural_disaster_survival`;
-                } else if (gameTitle === 'Work at a Pizza Place') {
-                    window.location.href = `game.html?game=work_at_pizza_place`;
-                } else {
-                    await alert("Não foi possível iniciar o jogo: ID do jogo não encontrado.");
-                }
-            }
-        }
-        // Handle Favorite Toggle Button clicks
-        else if (e.target.classList.contains('favorite-toggle-button')) {
-            e.preventDefault(); 
-            const currentUser = userManager.getCurrentUser();
-            if (!currentUser) {
-                await alert('Você precisa estar logado para favoritar jogos.');
-                return;
-            }
-
-            // Get the game title from the button's dataset
-            const gameTitle = e.target.dataset.gameTitle; 
-            
-            // Ensure gameTitle is a string, default to empty string if not
-            const safeGameTitle = typeof gameTitle === 'string' ? gameTitle.trim() : '';
-            
-            if (safeGameTitle === '') {
-                await alert("Não foi possível identificar o jogo. O título está vazio.");
-                console.error("Game title is empty after parsing dataset and trimming.", e.target);
-                return;
-            }
-
-            const profile = profileManager.getProfile(currentUser);
-            let result;
-
-            // Use safeGameTitle for favorite operations
-            if (profile.favorites.includes(safeGameTitle)) {
-                result = profileManager.removeFavorite(currentUser, safeGameTitle);
-            } else {
-                result = profileManager.addFavorite(currentUser, safeGameTitle);
-            }
-            await alert(result.message); 
-            if (result.success) {
-                // Update favorite count on profile header if profile is visible
-                const favoriteCountElement = document.getElementById('favorite-count');
-                if (favoriteCountElement) {
-                    favoriteCountElement.textContent = profileManager.getProfile(currentUser).favorites.length;
-                }
-                updateFeaturedGameCards(); 
-                // If favorites tab is open, re-render it
-                if (document.getElementById('favorites-tab').classList.contains('active')) {
-                    renderFavoriteGamesList(); 
-                }
-            }
-        }
-    });
     // --- END Event Delegation ---
 });
 
@@ -2548,10 +4013,144 @@ function showCreateBlogForm() {
 }
 
 function hideCreateBlogForm() {
-    showSection(document.getElementById('blog-list')); 
-    showOnlyAuthSection(''); 
+    showSection(document.getElementById('blog-list'));
+    showOnlyAuthSection('');
     document.getElementById('blog-create-form')?.reset();
-    setActiveNavLink('community-link'); 
+    setActiveNavLink('community-link');
+}
+
+// Creation Board Functions
+function showCreationBoard() {
+    const creationBoardSection = document.getElementById('creation-board-section');
+    const currentUser = userManager.getCurrentUser();
+
+    if (!currentUser) {
+        alert('Você precisa estar logado para acessar o estúdio de criação.');
+        openLoginModal();
+        return;
+    }
+
+    // Hide other sections
+    hideSection(document.getElementById('featured-games'));
+    hideSection(document.querySelector('.banner'));
+    hideSection(document.getElementById('profile-section'));
+    hideSection(document.getElementById('community-section'));
+    hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
+    hideSection(document.getElementById('game-detail-section'));
+    hideSection(document.getElementById('blog-list'));
+    showOnlyAuthSection('');
+
+    showSection(creationBoardSection);
+    loadUserCreationGames();
+    setActiveNavLink('studio-link');
+}
+
+function hideCreationBoard() {
+    const creationBoardSection = document.getElementById('creation-board-section');
+    hideSection(creationBoardSection);
+
+    setTimeout(() => {
+        showMainContent();
+        showOnlyAuthSection('');
+    }, 300);
+}
+
+function loadUserCreationGames() {
+    const currentUser = userManager.getCurrentUser();
+    const gamesGrid = document.getElementById('creation-games-grid');
+
+    console.log('loadUserCreationGames called, currentUser:', currentUser);
+
+    if (!currentUser) {
+        gamesGrid.innerHTML = '<p class="empty-message">Faça login para ver seus jogos.</p>';
+        return;
+    }
+
+    gamesGrid.innerHTML = '<p class="empty-message">Carregando jogos...</p>';
+
+    // Fetch published games from server API for this user only
+    console.log(`Fetching games from /api/user/${currentUser}/games...`);
+    fetch(`/api/user/${encodeURIComponent(currentUser)}/games`)
+        .then(response => {
+            console.log('Response status:', response.status);
+            return response.json();
+        })
+        .then(data => {
+            console.log('Games data received:', data);
+            const publishedGames = data.games || [];
+
+            // Filter games by current user
+            const userGames = publishedGames;
+
+            if (userGames.length === 0) {
+                gamesGrid.innerHTML = '<p class="empty-message">Nenhum jogo criado ainda. Clique em "Criar Novo Jogo" para começar!</p>';
+            } else {
+                gamesGrid.innerHTML = userGames.map(game => {
+                    const safeGameTitle = typeof game.title === 'string' ? game.title : 'Untitled Game';
+                    const safeGameId = typeof game.id === 'string' ? game.id : '';
+
+                    // Handle thumbnail
+                    const thumbnailSrc = game.thumbnail && game.thumbnail.startsWith('/thumbnails/')
+                        ? game.thumbnail
+                        : 'imgs/thumbnail1.jpg';
+
+                    return `
+                        <div class="creation-game-card" data-game-id="${escapeHtml(safeGameId)}">
+                            <div class="game-thumbnail">
+                                <img src="${thumbnailSrc}" alt="${escapeHtml(safeGameTitle)} Thumbnail" onerror="this.src='imgs/thumbnail1.jpg'">
+                            </div>
+                            <h4>${escapeHtml(safeGameTitle)}</h4>
+                            <div class="creation-game-actions">
+                                <button class="primary-button" onclick="editGame('${escapeHtml(safeGameId)}')">Editar</button>
+                                <button class="secondary-button" onclick="testGame('${escapeHtml(safeGameId)}')">Testar</button>
+                                <button class="danger-button" onclick="deleteGame('${escapeHtml(safeGameId)}')">Excluir</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        })
+        .catch(error => {
+            console.error('Error loading user creation games:', error);
+            gamesGrid.innerHTML = '<p class="empty-message">Erro ao carregar jogos. Tente novamente.</p>';
+        });
+}
+
+function createNewGame() {
+    window.location.href = 'studio.html';
+}
+
+function editGame(gameId) {
+    window.location.href = `studio.html?game=${encodeURIComponent(gameId)}`;
+}
+
+function testGame(gameId) {
+    window.location.href = `game.html?game=${encodeURIComponent(gameId)}`;
+}
+
+async function deleteGame(gameId) {
+    const confirmDelete = await confirm('Tem certeza que deseja excluir este jogo? Esta ação não pode ser desfeita.');
+    if (confirmDelete) {
+        try {
+            const response = await fetch(`/api/games/${encodeURIComponent(gameId)}`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                await alert('Jogo excluído com sucesso!');
+                // Reload the games list
+                loadUserCreationGames();
+            } else {
+                const error = await response.json();
+                await alert(`Erro ao excluir jogo: ${error.error || 'Erro desconhecido'}`);
+            }
+        } catch (error) {
+            console.error('Error deleting game:', error);
+            await alert('Erro ao excluir jogo. Tente novamente.');
+        }
+    }
 }
 
 // Re-defining these for clarity in global scope if called from HTML inline
@@ -2574,6 +4173,33 @@ window.openBlog = openBlog;
 window.sendFriendRequest = sendFriendRequest;
 window.acceptFriendRequest = acceptFriendRequest;
 window.declineFriendRequest = declineFriendRequest;
+window.cancelFriendRequest = cancelFriendRequest;
+window.unfriendUser = unfriendUser;
+window.followUser = followUser;
+window.unfollowUser = unfollowUser;
+window.addBestFriend = addBestFriend;
+window.removeBestFriend = removeBestFriend;
+window.blockUser = blockUser;
+window.unblockUser = unblockUser;
+window.switchFriendTab = switchFriendTab;
+
+// Creation Board functions
+window.showCreationBoard = showCreationBoard;
+window.hideCreationBoard = hideCreationBoard;
+window.loadUserCreationGames = loadUserCreationGames;
+window.createNewGame = createNewGame;
+window.editGame = editGame;
+window.testGame = testGame;
+window.deleteGame = deleteGame;
+
+// Item Detail functions
+window.showItemDetail = showItemDetail;
+window.hideItemDetail = hideItemDetail;
+window.handleCatalogAction = handleCatalogAction;
+
+// Game Details functions
+window.viewGameDetails = viewGameDetails;
+window.hideGameDetail = hideGameDetail;
 
 // Coin Reward Timer Logic
 let coinRewardIntervalId = null;

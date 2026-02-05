@@ -9,6 +9,9 @@ const {
     getGame,
     getAllGames,
     deleteGame,
+    updateGameLikes,
+    updateGameDislikes,
+    updateGameVisits,
     saveGameSync,
     getGameSync,
     getAllGamesSync,
@@ -21,7 +24,23 @@ const {
     getPlayer,
     getPlayerByNickname,
     getAllNicknames,
-    deletePlayer
+    deletePlayer,
+    registerAccount,
+    loginAccount,
+    updateAccountPassword,
+    deleteAccount,
+    getAccount,
+    getAllAccounts,
+    // Friend functions
+    getPlayerFriends,
+    addFriend,
+    removeFriend,
+    sendFriendRequest,
+    acceptFriendRequest,
+    declineFriendRequest,
+    cancelFriendRequest,
+    getFriendRequests,
+    isFriend
 } = require('./database');
 
 const app = express();
@@ -81,6 +100,322 @@ app.get('/', (req, res) => {
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', players: Object.keys(players).length });
+});
+
+// Add JSON parsing middleware before API routes (with larger limit for game publishing)
+app.use(express.json({ limit: '50mb' }));
+
+// Account API endpoints
+app.post('/api/register', async (req, res) => {
+    try {
+        const { username, password } = req.body || {};
+        if (!username || !password) {
+            return res.status(400).json({ success: false, message: 'Username and password are required' });
+        }
+        if (username.length < 3) {
+            return res.status(400).json({ success: false, message: 'Username must be at least 3 characters' });
+        }
+        if (password.length < 4) {
+            return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
+        }
+        const result = await registerAccount(username, password);
+        res.json(result);
+    } catch (error) {
+        console.error('Error registering user:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ success: false, message: 'Username and password are required' });
+        }
+        const result = await loginAccount(username, password);
+        res.json(result);
+    } catch (error) {
+        console.error('Error logging in:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+app.put('/api/change-password', async (req, res) => {
+    try {
+        const { username, currentPassword, newPassword } = req.body;
+        if (!username || !currentPassword || !newPassword) {
+            return res.status(400).json({ success: false, message: 'All fields are required' });
+        }
+        // First verify current password
+        const loginResult = await loginAccount(username, currentPassword);
+        if (!loginResult.success) {
+            return res.status(400).json({ success: false, message: 'Current password is incorrect' });
+        }
+        if (newPassword.length < 4) {
+            return res.status(400).json({ success: false, message: 'New password must be at least 4 characters' });
+        }
+        const result = await updateAccountPassword(username, newPassword);
+        res.json(result);
+    } catch (error) {
+        console.error('Error changing password:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+app.delete('/api/account', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ success: false, message: 'Username and password are required' });
+        }
+        // Verify password before deleting
+        const loginResult = await loginAccount(username, password);
+        if (!loginResult.success) {
+            return res.status(400).json({ success: false, message: 'Password is incorrect' });
+        }
+        const result = await deleteAccount(username);
+        res.json(result);
+    } catch (error) {
+        console.error('Error deleting account:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Search users by username pattern
+app.get('/api/users/search', async (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q || q.length < 1) {
+            return res.json({ users: [] });
+        }
+        // Get all usernames from both players and accounts tables
+        const [nicknames, accounts] = await Promise.all([
+            getAllNicknames(),
+            getAllAccounts()
+        ]);
+        
+        // Combine and deduplicate all usernames
+        const allUsernames = [...new Set([...nicknames, ...accounts])];
+        
+        // Filter by search query
+        const matchingUsers = allUsernames.filter(username => 
+            username.toLowerCase().includes(q.toLowerCase())
+        );
+        
+        res.json({ users: matchingUsers.slice(0, 10) }); // Return max 10 results
+    } catch (error) {
+        console.error('Error searching users:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Get user exists check
+app.get('/api/users/exists/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const account = await getAccount(username);
+        const player = await getPlayerByNickname(username);
+        res.json({ 
+            exists: !!(account || player),
+            hasAccount: !!account,
+            hasProfile: !!player
+        });
+    } catch (error) {
+        console.error('Error checking user exists:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Get user profile data (for friends display)
+app.get('/api/user-profile/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        
+        // First check if user exists in accounts or players
+        const account = await getAccount(username);
+        const player = await getPlayerByNickname(username);
+        
+        if (!account && !player) {
+            return res.json({ exists: false });
+        }
+        
+        // If player profile exists, return full data
+        if (player) {
+            const friendsData = await getPlayerFriends(username);
+            return res.json({
+                exists: true,
+                username: player.nickname,
+                displayName: player.displayName || player.nickname,
+                about: player.about || '',
+                joinDate: player.joinDate || '',
+                placeId: player.placeId || null,
+                friends: friendsData.friends || [],
+                followers: friendsData.followers || [],
+                following: friendsData.following || [],
+                friendCount: friendsData.friendCount || 0
+            });
+        }
+        
+        // If only account exists (no player profile yet), return basic data
+        res.json({
+            exists: true,
+            username: account.username,
+            displayName: account.username,
+            about: '',
+            joinDate: account.createdAt || '',
+            placeId: null,
+            friends: [],
+            followers: [],
+            following: [],
+            friendCount: 0
+        });
+    } catch (error) {
+        console.error('Error getting user profile:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// ========== FRIEND API ENDPOINTS ==========
+
+// Get user's friends data
+app.get('/api/friends/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const friendsData = await getPlayerFriends(username);
+        res.json(friendsData);
+    } catch (error) {
+        console.error('Error getting friends:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Get friend requests
+app.get('/api/friend-requests/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const requests = await getFriendRequests(username);
+        res.json(requests);
+    } catch (error) {
+        console.error('Error getting friend requests:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Check if users are friends
+app.get('/api/is-friend/:user1/:user2', async (req, res) => {
+    try {
+        const { user1, user2 } = req.params;
+        const result = await isFriend(user1, user2);
+        res.json({ isFriend: result });
+    } catch (error) {
+        console.error('Error checking friendship:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Send friend request
+app.post('/api/friends/send-request', async (req, res) => {
+    try {
+        const { sender, receiver } = req.body;
+        if (!sender || !receiver) {
+            return res.status(400).json({ success: false, message: 'Missing sender or receiver' });
+        }
+        const result = await sendFriendRequest(sender, receiver);
+        res.json(result);
+    } catch (error) {
+        console.error('Error sending friend request:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Accept friend request
+app.post('/api/friends/accept', async (req, res) => {
+    try {
+        const { accepter, sender } = req.body;
+        if (!accepter || !sender) {
+            return res.status(400).json({ success: false, message: 'Missing accepter or sender' });
+        }
+        const result = await acceptFriendRequest(accepter, sender);
+        res.json(result);
+    } catch (error) {
+        console.error('Error accepting friend request:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Decline friend request
+app.post('/api/friends/decline', async (req, res) => {
+    try {
+        const { decliner, sender } = req.body;
+        if (!decliner || !sender) {
+            return res.status(400).json({ success: false, message: 'Missing decliner or sender' });
+        }
+        const result = await declineFriendRequest(decliner, sender);
+        res.json(result);
+    } catch (error) {
+        console.error('Error declining friend request:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Cancel friend request
+app.post('/api/friends/cancel-request', async (req, res) => {
+    try {
+        const { sender, receiver } = req.body;
+        if (!sender || !receiver) {
+            return res.status(400).json({ success: false, message: 'Missing sender or receiver' });
+        }
+        const result = await cancelFriendRequest(sender, receiver);
+        res.json(result);
+    } catch (error) {
+        console.error('Error canceling friend request:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Add friend (after acceptance)
+app.post('/api/friends/add', async (req, res) => {
+    try {
+        const { user1, user2 } = req.body;
+        if (!user1 || !user2) {
+            return res.status(400).json({ success: false, message: 'Missing users' });
+        }
+        const result = await addFriend(user1, user2);
+        res.json(result);
+    } catch (error) {
+        console.error('Error adding friend:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Remove friend
+app.post('/api/friends/remove', async (req, res) => {
+    try {
+        const { user1, user2 } = req.body;
+        if (!user1 || !user2) {
+            return res.status(400).json({ success: false, message: 'Missing users' });
+        }
+        const result = await removeFriend(user1, user2);
+        res.json(result);
+    } catch (error) {
+        console.error('Error removing friend:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Search users
+app.get('/api/users/search', async (req, res) => {
+    try {
+        const query = req.query.q || '';
+        const nicknames = await getAllNicknames();
+        const matchingUsers = nicknames.filter(nickname => 
+            nickname.toLowerCase().includes(query.toLowerCase())
+        );
+        res.json({ users: matchingUsers });
+    } catch (error) {
+        console.error('Error searching users:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
 });
 
 // Map persistence API (SQLite database)
@@ -144,10 +479,6 @@ app.use(
   })
 );
 
-
-app.use(express.json({ limit: '50mb' }));
-app.use(express.static("public"));
-
 // Helper function to save data URL as file
 function saveDataUrlAsFile(dataUrl, filename) {
     return new Promise((resolve, reject) => {
@@ -186,40 +517,72 @@ function saveDataUrlAsFile(dataUrl, filename) {
 app.post('/api/games', async (req, res) => {
     try {
         const gameData = req.body;
-        if (!gameData || !gameData.title) {
-            return res.status(400).json({ error: 'Game title is required' });
+
+        // Check if this is an update to existing game
+        let isUpdate = false;
+        let existingGame = null;
+        if (gameData.gameId) {
+            existingGame = await getGame(gameData.gameId);
+            isUpdate = !!existingGame;
+        }
+
+        if (!gameData || (!isUpdate && !gameData.title)) {
+            return res.status(400).json({ error: 'Game title is required for new games' });
         }
 
         // Generate game ID if not provided
         const gameId = gameData.gameId || 'game_' + Date.now();
 
+        // For updates, merge with existing data
+        let finalGameData = gameData;
+        if (isUpdate) {
+            finalGameData = { ...existingGame, ...gameData };
+        }
+
         // Handle thumbnail if it's a data URL
-        if (gameData.thumbnail && gameData.thumbnail.startsWith('data:')) {
+        if (finalGameData.thumbnail && finalGameData.thumbnail.startsWith('data:')) {
             try {
-                const thumbnailFilename = `${gameId}_thumbnail.png`;
-                await saveDataUrlAsFile(gameData.thumbnail, thumbnailFilename);
+                // Extract mime type to determine file extension
+                const matches = finalGameData.thumbnail.match(/^data:([A-Za-z-+\/]+);base64,/);
+                const mimeType = matches ? matches[1] : 'image/png';
+                let extension = mimeType.split('/')[1] || 'png'; // e.g., 'png', 'jpeg', 'jpg'
+                if (extension === 'jpeg') extension = 'jpg'; // Use 'jpg' instead of 'jpeg'
+                const thumbnailFilename = `${gameId}_thumbnail.${extension}`;
+                await saveDataUrlAsFile(finalGameData.thumbnail, thumbnailFilename);
                 // Update game data to use file path instead of data URL
-                gameData.thumbnail = `/thumbnails/${thumbnailFilename}`;
+                finalGameData.thumbnail = `/thumbnails/${thumbnailFilename}`;
             } catch (error) {
-                console.warn('Failed to save thumbnail as file, using default:', error);
-                gameData.thumbnail = 'thumbnail1.jpg';
+                console.warn('Failed to save thumbnail as file, keeping existing:', error);
+                // Keep existing thumbnail for updates
+                if (isUpdate && existingGame.thumbnail) {
+                    finalGameData.thumbnail = existingGame.thumbnail;
+                } else {
+                    finalGameData.thumbnail = 'thumbnail1.jpg';
+                }
             }
-        } else {
-            gameData.thumbnail = 'thumbnail1.jpg';
+        } else if (!isUpdate) {
+            finalGameData.thumbnail = 'thumbnail1.jpg';
+        }
+
+        // Ensure creator_id is set (should be passed from frontend)
+        if (!finalGameData.creator_id) {
+            return res.status(400).json({ error: 'Creator ID is required' });
         }
 
         // Save game data to database
-        const result = await saveGame(gameId, gameData);
+        const result = await saveGame(gameId, finalGameData);
         if (!result.success) {
             return res.status(500).json({ error: 'Failed to save game' });
         }
 
-        console.log(`Game "${gameData.title}" published with ID: ${gameId}`);
+        const action = isUpdate ? 'updated' : 'published';
+        console.log(`Game "${finalGameData.title}" ${action} with ID: ${gameId} by creator: ${finalGameData.creator_id}`);
 
+        const message = isUpdate ? 'Game updated successfully' : 'Game published successfully';
         res.json({
             success: true,
             gameId: gameId,
-            message: 'Game published successfully'
+            message: message
         });
     } catch (error) {
         console.error('Error publishing game:', error);
@@ -255,13 +618,277 @@ app.get('/api/games/:gameId', async (req, res) => {
     }
 });
 
+// Update specific game (SQLite database)
+app.put('/api/games/:gameId', async (req, res) => {
+    try {
+        const gameId = req.params.gameId;
+        const updateData = req.body;
+
+        // Check if game exists
+        const existingGame = await getGame(gameId);
+        if (!existingGame) {
+            return res.status(404).json({ error: 'Game not found' });
+        }
+
+        // Handle thumbnail if it's a data URL
+        if (updateData.thumbnail && updateData.thumbnail.startsWith('data:')) {
+            try {
+                // Extract mime type to determine file extension
+                const matches = updateData.thumbnail.match(/^data:([A-Za-z-+\/]+);base64,/);
+                const mimeType = matches ? matches[1] : 'image/png';
+                let extension = mimeType.split('/')[1] || 'png';
+                if (extension === 'jpeg') extension = 'jpg';
+                const thumbnailFilename = `${gameId}_thumbnail.${extension}`;
+                await saveDataUrlAsFile(updateData.thumbnail, thumbnailFilename);
+                // Update game data to use file path instead of data URL
+                updateData.thumbnail = `/thumbnails/${thumbnailFilename}`;
+            } catch (error) {
+                console.warn('Failed to save thumbnail as file, keeping existing:', error);
+                // Keep existing thumbnail
+                updateData.thumbnail = existingGame.thumbnail;
+            }
+        }
+
+        // Merge with existing data
+        const updatedGameData = { ...existingGame, ...updateData, updatedAt: new Date().toISOString() };
+
+        // Save updated game data to database
+        const result = await saveGame(gameId, updatedGameData);
+        if (!result.success) {
+            return res.status(500).json({ error: 'Failed to update game' });
+        }
+
+        console.log(`Game "${updatedGameData.title}" updated with ID: ${gameId}`);
+
+        res.json({
+            success: true,
+            gameId: gameId,
+            message: 'Game updated successfully'
+        });
+    } catch (error) {
+        console.error('Error updating game:', error);
+        res.status(500).json({ error: 'Failed to update game' });
+    }
+});
+
+// Get game details with player count
+app.get('/api/game-details/:gameId', async (req, res) => {
+    try {
+        const gameId = req.params.gameId;
+        const gameData = await getGame(gameId);
+
+        if (!gameData) {
+            return res.status(404).json({ error: 'Game not found' });
+        }
+
+        // Get player count in room
+        const room = io.sockets.adapter.rooms.get(gameId);
+        const playerCount = room ? room.size : 0;
+
+        res.json({
+            ...gameData,
+            playing: playerCount
+        });
+    } catch (error) {
+        console.error('Error loading game details:', error);
+        res.status(500).json({ error: 'Failed to load game details' });
+    }
+});
+
+// Delete specific game (SQLite database)
+app.delete('/api/games/:gameId', async (req, res) => {
+    try {
+        const gameId = req.params.gameId;
+
+        // Check if game exists
+        const gameData = await getGame(gameId);
+        if (!gameData) {
+            return res.status(404).json({ error: 'Game not found' });
+        }
+
+        // Delete thumbnail file if it exists
+        if (gameData.thumbnail && gameData.thumbnail.startsWith('/thumbnails/')) {
+            const thumbnailPath = path.join(__dirname, gameData.thumbnail);
+            try {
+                if (fs.existsSync(thumbnailPath)) {
+                    fs.unlinkSync(thumbnailPath);
+                    console.log(`Deleted thumbnail file: ${thumbnailPath}`);
+                }
+            } catch (error) {
+                console.warn('Failed to delete thumbnail file:', error);
+            }
+        }
+
+        // Delete game from database
+        const result = await deleteGame(gameId);
+        if (!result.success) {
+            return res.status(500).json({ error: 'Failed to delete game' });
+        }
+
+        console.log(`Game "${gameData.title}" deleted with ID: ${gameId}`);
+
+        res.json({
+            success: true,
+            message: 'Game deleted successfully'
+        });
+    } catch (error) {
+        console.error('Error deleting game:', error);
+        res.status(500).json({ error: 'Failed to delete game' });
+    }
+});
+
+// Like a game
+app.put('/api/games/:gameId/like', async (req, res) => {
+    try {
+        const gameId = req.params.gameId;
+
+        // Check if game exists
+        const gameData = await getGame(gameId);
+        if (!gameData) {
+            return res.status(404).json({ error: 'Game not found' });
+        }
+
+        // Increment likes
+        const result = await updateGameLikes(gameId, 1);
+        if (!result.success) {
+            return res.status(500).json({ error: 'Failed to like game' });
+        }
+
+        // Get updated game data
+        const updatedGame = await getGame(gameId);
+
+        res.json({
+            success: true,
+            likes: updatedGame.likes,
+            dislikes: updatedGame.dislikes
+        });
+    } catch (error) {
+        console.error('Error liking game:', error);
+        res.status(500).json({ error: 'Failed to like game' });
+    }
+});
+
+// Rate a game (like/dislike with toggle)
+app.put('/api/games/:gameId/rate', async (req, res) => {
+    try {
+        const gameId = req.params.gameId;
+        const { action } = req.body;
+
+        // Check if game exists
+        const gameData = await getGame(gameId);
+        if (!gameData) {
+            return res.status(404).json({ error: 'Game not found' });
+        }
+
+        if (action === 'like') {
+            await updateGameLikes(gameId, 1);
+        } else if (action === 'dislike') {
+            await updateGameDislikes(gameId, 1);
+        } else if (action === 'change_to_like') {
+            await updateGameDislikes(gameId, -1);
+            await updateGameLikes(gameId, 1);
+        } else if (action === 'change_to_dislike') {
+            await updateGameLikes(gameId, -1);
+            await updateGameDislikes(gameId, 1);
+        } else if (action === 'remove_like') {
+            await updateGameLikes(gameId, -1);
+        } else if (action === 'remove_dislike') {
+            await updateGameDislikes(gameId, -1);
+        } else {
+            return res.status(400).json({ error: 'Invalid action' });
+        }
+
+        // Get updated game data
+        const updatedGame = await getGame(gameId);
+
+        res.json({
+            success: true,
+            likes: updatedGame.likes,
+            dislikes: updatedGame.dislikes
+        });
+    } catch (error) {
+        console.error('Error rating game:', error);
+        res.status(500).json({ error: 'Failed to rate game' });
+    }
+});
+
+// Increment game visits
+app.post('/api/games/:gameId/visit', async (req, res) => {
+    try {
+        const gameId = req.params.gameId;
+
+        // Check if game exists
+        const gameData = await getGame(gameId);
+        if (!gameData) {
+            return res.status(404).json({ error: 'Game not found' });
+        }
+
+        await updateGameVisits(gameId, 1);
+
+        // Get updated game data
+        const updatedGame = await getGame(gameId);
+
+        res.json({
+            success: true,
+            visits: updatedGame.visits
+        });
+    } catch (error) {
+        console.error('Error incrementing visits:', error);
+        res.status(500).json({ error: 'Failed to increment visits' });
+    }
+});
+
+// Get user stats (total visits for all games)
+app.get('/api/user/:username/stats', async (req, res) => {
+    try {
+        const username = req.params.username;
+
+        // Get all games by this creator
+        const allGames = await getAllGames();
+        const userGames = allGames.filter(game => game.creator_id === username);
+
+        // Calculate total visits
+        const totalVisits = userGames.reduce((sum, game) => sum + (game.visits || 0), 0);
+
+        res.json({
+            totalVisits: totalVisits,
+            totalGames: userGames.length
+        });
+    } catch (error) {
+        console.error('Error getting user stats:', error);
+        res.status(500).json({ error: 'Failed to get user stats' });
+    }
+});
+
+// Get games by user
+app.get('/api/user/:username/games', async (req, res) => {
+    try {
+        const username = req.params.username;
+
+        // Get all games by this creator
+        const allGames = await getAllGames();
+        const userGames = allGames.filter(game => game.creator_id === username);
+
+        res.json({ games: userGames });
+    } catch (error) {
+        console.error('Error getting user games:', error);
+        res.status(500).json({ error: 'Failed to get user games' });
+    }
+});
+
 // Store connected players
 let players = {};
 const activeNicknames = {};
-const GAME_TICK_RATE = 20; // 20 updates per second
+const GAME_TICK_RATE = 30; // 30 updates per second
 // Networking/synchronization tunables
 const MAX_MOVE_RATE = 30; // Max accepted move packets per second per client
 const WORLD_BOUNDS = { xz: 250, yMin: 0, yMax: 500 }; // Clamp world to a reasonable area to avoid bad data
+
+// Physics ownership for parts
+let partOwnership = {}; // partName -> ownerId
+
+// Store parts per room
+let parts = {}; // room -> { partName: partData }
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, Number(v) || 0));
@@ -321,6 +948,7 @@ io.on('connection', (socket) => {
             Object.entries(players).filter(([_, p]) => p.room === roomName)
         );
         socket.emit('initialPlayers', roomPlayers);
+        socket.emit('initialParts', Object.values(parts[roomName] || {}));
         // Avise os outros da mesma sala
         socket.to(roomName).emit('playerJoined', players[socket.id]);
     });
@@ -409,6 +1037,41 @@ io.on('connection', (socket) => {
         io.to(roomName).emit('explosion', data);
     });
 
+    // PART CREATION SYNC
+    socket.on('partCreated', (data) => {
+        if (!data || !data.name) return;
+        if (!parts[roomName]) parts[roomName] = {};
+        if (!parts[roomName][data.name]) {
+            parts[roomName][data.name] = data;
+            socket.to(roomName).emit('partCreated', data);
+        }
+    });
+
+    // PART MOVEMENT SYNC: relay part transform updates to other clients in the same room
+    socket.on('partMoved', (data) => {
+        // data should contain: { name, position: {x,y,z}, rotation: {x,y,z}, velocity? }
+        if (!data || !data.name) return;
+        // Update stored part data
+        if (parts[roomName] && parts[roomName][data.name]) {
+            parts[roomName][data.name].position = data.position;
+            parts[roomName][data.name].rotation = data.rotation;
+        }
+        // Broadcast to others in the same room
+        socket.to(roomName).emit('partMoved', {
+            name: String(data.name),
+            position: data.position,
+            rotation: data.rotation,
+            velocity: data.velocity || null
+        });
+    });
+
+    // PART DELETION SYNC
+    socket.on('partDeleted', (data) => {
+        if (!data || !data.name) return;
+        if (parts[roomName]) delete parts[roomName][data.name];
+        socket.to(roomName).emit('partDeleted', data);
+    });
+
     // TAKE DAMAGE
     socket.on('takeDamage', ({ damage }) => {
         const p = players[socket.id];
@@ -421,14 +1084,29 @@ io.on('connection', (socket) => {
         }
     });
 
-    // KILL EVENT -> notify room so killer and others see victim's death/respawn effect
+    // KILL EVENT -> update victim's health, emit playerDied only if health <=0
     socket.on('playerHit', ({ killer, victim }) => {
-        io.to(roomName).emit('playerDied', { killer, victim });
+        const victimPlayer = players[victim];
+        if (victimPlayer) {
+            victimPlayer.health = Math.max(0, victimPlayer.health - 25);
+            if (victimPlayer.health <= 0) {
+                io.to(roomName).emit('playerDied', { killer, victim });
+            } else {
+                io.to(victim).emit('healthUpdate', { health: victimPlayer.health });
+            }
+        }
     });
 
     // RAGDOLL
     socket.on('playerRagdoll', (data) => {
         io.to(roomName).emit('playerRagdoll', data);
+    });
+
+    // RESPAWN
+    socket.on('respawn', () => {
+        if (players[socket.id]) {
+            players[socket.id].health = 100;
+        }
     });
 
     // ADMIN COMANDOS
@@ -483,6 +1161,56 @@ setInterval(() => {
         }
     }
 }, 1000 / GAME_TICK_RATE);
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).send(`
+        <!DOCTYPE html>
+        <html lang="pt">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>404 - Página não encontrada</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    background-color: #f0f0f0;
+                    margin: 0;
+                    padding: 50px;
+                }
+                .container {
+                    max-width: 600px;
+                    margin: 0 auto;
+                    background: white;
+                    padding: 40px;
+                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                }
+                img {
+                    max-width: 100%;
+                    height: auto;
+                    margin-bottom: 20px;
+                }
+                h1 {
+                    color: #333;
+                    margin-bottom: 20px;
+                }
+                p {
+                    color: #666;
+                    font-size: 18px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <img src="/imgs/404.jpg" alt="404 Error">
+                <h1>404 - Página não encontrada</h1>
+                <p>Está página não existe! Volte agora!!!!</p>
+            </div>
+        </body>
+        </html>
+    `);
+});
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
