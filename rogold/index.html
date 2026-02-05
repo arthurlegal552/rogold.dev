@@ -79,7 +79,6 @@
                     <div class="profile-tabs">
                         <button class="tab-button active" data-tab="about">Sobre</button>
                         <button class="tab-button" data-tab="games">Meus Jogos</button>
-                        <button class="tab-button" data-tab="friends">Amigos</button>
                         <button class="tab-button" data-tab="favorites">Favoritos</button>
                         <button class="tab-button" data-tab="messages">Mensagens</button>
                     </div>
@@ -97,87 +96,6 @@
                             <h3>Meus Jogos</h3>
                             <div class="games-grid" id="user-games">
                                 <p class="empty-message">Nenhum jogo criado ainda.</p>
-                            </div>
-                        </div>
-
-                        <div id="friends-tab" class="tab-panel">
-                            <h3>Friends</h3>
-                            <div class="friends-stats">
-                                <div class="stat-item" onclick="switchFriendTab('friends')">
-                                    <span class="stat-value" id="friends-count">0</span>
-                                    <span class="stat-label">Friends</span>
-                                </div>
-                                <div class="stat-item" onclick="switchFriendTab('followers')">
-                                    <span class="stat-value" id="followers-count">0</span>
-                                    <span class="stat-label">Followers</span>
-                                </div>
-                                <div class="stat-item" onclick="switchFriendTab('following')">
-                                    <span class="stat-value" id="following-count">0</span>
-                                    <span class="stat-label">Following</span>
-                                </div>
-                            </div>
-                            
-                            <!-- Friend sub-tabs -->
-                            <div class="friend-subtabs">
-                                <button class="friend-subtab active" data-subtab="friends" onclick="switchFriendTab('friends')">Friends</button>
-                                <button class="friend-subtab" data-subtab="requests" onclick="switchFriendTab('requests')">
-                                    Requests
-                                    <span class="request-badge" id="request-count-badge" style="display:none;">0</span>
-                                </button>
-                                <button class="friend-subtab" data-subtab="sent-requests" onclick="switchFriendTab('sent-requests')">
-                                    Sent
-                                    <span class="request-badge" id="sent-count-badge" style="display:none;">0</span>
-                                </button>
-                                <button class="friend-subtab" data-subtab="followers" onclick="switchFriendTab('followers')">Followers</button>
-                                <button class="friend-subtab" data-subtab="following" onclick="switchFriendTab('following')">Following</button>
-                            </div>
-                            
-                            <!-- Search users -->
-                            <div class="search-section">
-                                <div class="form-group search-users">
-                                    <label for="user-search-input">Find Friends:</label>
-                                    <input type="text" id="user-search-input" placeholder="Enter username...">
-                                    <button class="primary-button" id="search-users-button">Search</button>
-                                </div>
-                            </div>
-                            
-                            <!-- Friend lists by sub-tab -->
-                            <div id="friends-content" class="friend-content active">
-                                <div class="friends-grid" id="friends-list">
-                                    <p class="empty-message">No friends yet. Add some friends!</p>
-                                </div>
-                            </div>
-                            
-                            <div id="requests-content" class="friend-content">
-                                <div class="requests-grid" id="friend-requests-list">
-                                    <p class="empty-message">No friend requests.</p>
-                                </div>
-                            </div>
-                            
-                            <div id="sent-requests-content" class="friend-content">
-                                <div class="requests-grid" id="sent-requests-list">
-                                    <p class="empty-message">No sent friend requests.</p>
-                                </div>
-                            </div>
-                            
-                            <div id="followers-content" class="friend-content">
-                                <div class="followers-grid" id="followers-list">
-                                    <p class="empty-message">No followers yet.</p>
-                                </div>
-                            </div>
-                            
-                            <div id="following-content" class="friend-content">
-                                <div class="following-grid" id="following-list">
-                                    <p class="empty-message">Not following anyone yet.</p>
-                                </div>
-                            </div>
-                            
-                            <!-- Search results -->
-                            <div class="search-results-section">
-                                <h4>Search Results</h4>
-                                <div id="user-search-results" class="search-results-grid">
-                                    <p class="empty-message">Search for users to add as friend.</p>
-                                </div>
                             </div>
                         </div>
 

@@ -155,24 +155,7 @@ class UserManager {
             return result.users || [];
         } catch (error) {
             console.error('Error searching users:', error);
-            // Fallback to local search
-            const queryLower = query.toLowerCase();
-            const allProfiles = profileManager.profiles;
-            const matchingUsers = Object.keys(allProfiles).filter(username => {
-                return username.toLowerCase().includes(queryLower);
-            });
-            return matchingUsers;
-        }
-    }
-
-    async getUserProfile(username) {
-        try {
-            const response = await fetch(`/api/user-profile/${encodeURIComponent(username)}`);
-            const result = await response.json();
-            return result.exists ? result : null;
-        } catch (error) {
-            console.error('Error fetching user profile:', error);
-            return null;
+            return [];
         }
     }
 
@@ -255,27 +238,19 @@ class ProfileManager {
         const defaultProfile = {
             bio: 'Este usuário ainda não escreveu uma descrição.',
             status: 'Offline',
-            friends: [], // Mutual friends (both users added each other)
-            followers: [], // Users following this user
-            following: [], // Users this user is following
-            friendRequests: [], // Incoming friend requests
-            sentFriendRequests: [], // Outgoing friend requests
-            bestFriends: [], // Best friends (close friends)
-            blockedUsers: [], // Blocked users
             favorites: [],
             profilePicture: null,
             coins: 500,
             inventory: [],
             equippedItems: {},
-            ratings: {}, // gameId: 'like' or 'dislike' or undefined
-            lastOnline: null
+            ratings: {} // gameId: 'like' or 'dislike' or undefined
         };
 
         // Merge existing profile data with default values to ensure all fields are present.
         const mergedProfile = { ...defaultProfile, ...rawProfile };
 
         // Ensure array types for lists and filter out non-string/empty values
-        ['friends', 'followers', 'following', 'friendRequests', 'sentFriendRequests', 'bestFriends', 'blockedUsers', 'favorites', 'inventory'].forEach(key => { 
+        ['favorites', 'inventory'].forEach(key => { 
             if (!Array.isArray(mergedProfile[key])) {
                 mergedProfile[key] = [];
             }
@@ -325,337 +300,66 @@ class ProfileManager {
         return false;
     }
 
-    // ========== ROBLOX-STYLE FRIENDS SYSTEM ==========
-    
     // Send a friend request
     async sendFriendRequest(senderUsername, receiverUsername) {
         if (senderUsername === receiverUsername) {
-            return { success: false, message: 'You cannot send a friend request to yourself!' };
+            return { success: false, message: 'Você não pode enviar um pedido de amizade para si mesmo!' };
         }
         const userExists = await this.userManager.userExists(receiverUsername);
         if (!userExists) {
-            return { success: false, message: 'User not found.' };
+            return { success: false, message: 'Usuário não encontrado.' };
         }
 
-        try {
-            const response = await fetch('/api/friends/send-request', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sender: senderUsername, receiver: receiverUsername })
-            });
-            const result = await response.json();
-            return result;
-        } catch (error) {
-            console.error('Error sending friend request:', error);
-            return { success: false, message: 'Failed to send friend request.' };
+        const senderProfile = this.getProfile(senderUsername);
+        const receiverProfile = this.getProfile(receiverUsername);
+
+        if (senderProfile.friends.includes(receiverUsername)) {
+            return { success: false, message: 'Vocês já são amigos!' };
         }
+        if (senderProfile.sentRequests.includes(receiverUsername)) {
+            return { success: false, message: 'Você já enviou um pedido de amizade para este usuário!' };
+        }
+        if (senderProfile.receivedRequests.includes(receiverUsername)) {
+            return { success: false, message: 'Este usuário já enviou um pedido de amizade para você! Aceite-o.' };
+        }
+
+        senderProfile.sentRequests.push(receiverUsername);
+        receiverProfile.receivedRequests.push(senderUsername);
+        this.saveProfiles();
+        return { success: true, message: `Pedido de amizade enviado para ${receiverUsername}!` };
     }
 
     // Accept a friend request
-    async acceptFriendRequest(accepterUsername, senderUsername) {
-        try {
-            const response = await fetch('/api/friends/accept', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accepter: accepterUsername, sender: senderUsername })
-            });
-            const result = await response.json();
-            return result;
-        } catch (error) {
-            console.error('Error accepting friend request:', error);
-            return { success: false, message: 'Failed to accept friend request.' };
-        }
+    acceptFriendRequest(accepterUsername, senderUsername) {
+        const accepterProfile = this.getProfile(accepterUsername);
+        const senderProfile = this.getProfile(senderUsername);
+
+        // Remove from received requests
+        accepterProfile.receivedRequests = accepterProfile.receivedRequests.filter(user => user !== senderUsername);
+        // Add to friends list for accepter
+        accepterProfile.friends.push(senderUsername);
+
+        // Remove from sent requests for sender
+        senderProfile.sentRequests = senderProfile.sentRequests.filter(user => user !== accepterUsername);
+        // Add to friends list for sender
+        senderProfile.friends.push(accepterUsername);
+        
+        this.saveProfiles();
+        return { success: true, message: `Você e ${senderUsername} agora são amigos!` };
     }
 
     // Decline a friend request
-    async declineFriendRequest(declinerUsername, senderUsername) {
-        try {
-            const response = await fetch('/api/friends/decline', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ decliner: declinerUsername, sender: senderUsername })
-            });
-            const result = await response.json();
-            return result;
-        } catch (error) {
-            console.error('Error declining friend request:', error);
-            return { success: false, message: 'Failed to decline friend request.' };
-        }
-    }
+    declineFriendRequest(declinerUsername, senderUsername) {
+        const declinerProfile = this.getProfile(declinerUsername);
+        const senderProfile = this.getProfile(senderUsername);
 
-    // Cancel a sent friend request
-    async cancelFriendRequest(senderUsername, receiverUsername) {
-        try {
-            const response = await fetch('/api/friends/cancel-request', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sender: senderUsername, receiver: receiverUsername })
-            });
-            const result = await response.json();
-            return result;
-        } catch (error) {
-            console.error('Error canceling friend request:', error);
-            return { success: false, message: 'Failed to cancel friend request.' };
-        }
-    }
+        // Remove from received requests for decliner
+        declinerProfile.receivedRequests = declinerProfile.receivedRequests.filter(user => user !== senderUsername);
+        // Remove from sent requests for sender
+        senderProfile.sentRequests = senderProfile.sentRequests.filter(user => user !== declinerUsername);
 
-    // Unfriend a user
-    async unfriendUser(username, friendToRemove) {
-        try {
-            const response = await fetch('/api/friends/remove', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user1: username, user2: friendToRemove })
-            });
-            const result = await response.json();
-            return result;
-        } catch (error) {
-            console.error('Error unfriending user:', error);
-            return { success: false, message: 'Failed to unfriend user.' };
-        }
-    }
-
-    // Follow a user
-    async followUser(followerUsername, followingUsername) {
-        if (followerUsername === followingUsername) {
-            return { success: false, message: 'You cannot follow yourself!' };
-        }
-        
-        const followerProfile = this.getProfile(followerUsername);
-        const followingProfile = this.getProfile(followingUsername);
-        
-        // Check if blocked
-        if (followerProfile.blockedUsers.includes(followingUsername)) {
-            return { success: false, message: 'You have blocked this user.' };
-        }
-        if (followingProfile.blockedUsers.includes(followerUsername)) {
-            return { success: false, message: 'This user has blocked you.' };
-        }
-
-        // Check if already following
-        if (followerProfile.following.includes(followingUsername)) {
-            return { success: false, message: 'You are already following this user!' };
-        }
-        
-        // Add to following and followers
-        followerProfile.following.push(followingUsername);
-        followingProfile.followers.push(followerUsername);
-        
         this.saveProfiles();
-        return { success: true, message: `You are now following ${followingUsername}!` };
-    }
-
-    // Unfollow a user
-    async unfollowUser(unfollowerUsername, unfollowedUsername) {
-        const unfollowerProfile = this.getProfile(unfollowerUsername);
-        const unfollowedProfile = this.getProfile(unfollowedUsername);
-        
-        // Remove from following
-        unfollowerProfile.following = unfollowerProfile.following.filter(user => user !== unfollowedUsername);
-        // Remove from followers
-        unfollowedProfile.followers = unfollowedProfile.followers.filter(user => user !== unfollowerUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `You have unfollowed ${unfollowedUsername}.` };
-    }
-
-    // Add user to best friends
-    async addBestFriend(username, bestFriendUsername) {
-        const profile = this.getProfile(username);
-        
-        // Check if they are friends
-        if (!profile.friends.includes(bestFriendUsername)) {
-            return { success: false, message: 'You can only add friends as best friends!' };
-        }
-        
-        // Check if already best friends
-        if (profile.bestFriends.includes(bestFriendUsername)) {
-            return { success: false, message: 'This user is already your best friend!' };
-        }
-        
-        // Add to best friends
-        profile.bestFriends.push(bestFriendUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${bestFriendUsername} is now your best friend!` };
-    }
-
-    // Remove user from best friends
-    async removeBestFriend(username, formerBestFriendUsername) {
-        const profile = this.getProfile(username);
-        
-        profile.bestFriends = profile.bestFriends.filter(friend => friend !== formerBestFriendUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${formerBestFriendUsername} is no longer your best friend.` };
-    }
-
-    // Block a user
-    async blockUser(blockerUsername, blockedUsername) {
-        if (blockerUsername === blockedUsername) {
-            return { success: false, message: 'You cannot block yourself!' };
-        }
-        
-        const blockerProfile = this.getProfile(blockerUsername);
-        const blockedProfile = this.getProfile(blockedUsername);
-        
-        // Check if already blocked
-        if (blockerProfile.blockedUsers.includes(blockedUsername)) {
-            return { success: false, message: 'You have already blocked this user!' };
-        }
-        
-        // Add to blocked users
-        blockerProfile.blockedUsers.push(blockedUsername);
-        
-        // Remove from friends if applicable
-        blockerProfile.friends = blockerProfile.friends.filter(friend => friend !== blockedUsername);
-        blockerProfile.bestFriends = blockerProfile.bestFriends.filter(friend => friend !== blockedUsername);
-        
-        // Remove from followers/following
-        blockerProfile.following = blockerProfile.following.filter(user => user !== blockedUsername);
-        blockerProfile.followers = blockerProfile.followers.filter(user => user !== blockedUsername);
-        
-        // Remove from requests
-        blockerProfile.friendRequests = blockerProfile.friendRequests.filter(user => user !== blockedUsername);
-        blockerProfile.sentFriendRequests = blockerProfile.sentFriendRequests.filter(user => user !== blockedUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${blockedUsername} has been blocked.` };
-    }
-
-    // Unblock a user
-    async unblockUser(unblockerUsername, unblockedUsername) {
-        const unblockerProfile = this.getProfile(unblockerUsername);
-        
-        unblockerProfile.blockedUsers = unblockerProfile.blockedUsers.filter(user => user !== unblockedUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${unblockedUsername} has been unblocked.` };
-    }
-
-    // Follow a user
-    async followUser(followerUsername, followingUsername) {
-        if (followerUsername === followingUsername) {
-            return { success: false, message: 'You cannot follow yourself!' };
-        }
-        
-        const followerProfile = this.getProfile(followerUsername);
-        const followingProfile = this.getProfile(followingUsername);
-        
-        // Check if blocked
-        if (followerProfile.blockedUsers.includes(followingUsername)) {
-            return { success: false, message: 'You have blocked this user.' };
-        }
-        if (followingProfile.blockedUsers.includes(followerUsername)) {
-            return { success: false, message: 'This user has blocked you.' };
-        }
-
-        // Check if already following
-        if (followerProfile.following.includes(followingUsername)) {
-            return { success: false, message: 'You are already following this user!' };
-        }
-        
-        // Add to following and followers
-        followerProfile.following.push(followingUsername);
-        followingProfile.followers.push(followerUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `You are now following ${followingUsername}!` };
-    }
-
-    // Unfollow a user
-    unfollowUser(unfollowerUsername, unfollowedUsername) {
-        const unfollowerProfile = this.getProfile(unfollowerUsername);
-        const unfollowedProfile = this.getProfile(unfollowedUsername);
-        
-        // Remove from following
-        unfollowerProfile.following = unfollowerProfile.following.filter(user => user !== unfollowedUsername);
-        // Remove from followers
-        unfollowedProfile.followers = unfollowedProfile.followers.filter(user => user !== unfollowerUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `You have unfollowed ${unfollowedUsername}.` };
-    }
-
-    // Add user to best friends
-    addBestFriend(username, bestFriendUsername) {
-        const profile = this.getProfile(username);
-        const bestFriendProfile = this.getProfile(bestFriendUsername);
-        
-        // Check if they are friends
-        if (!profile.friends.includes(bestFriendUsername)) {
-            return { success: false, message: 'You can only add friends as best friends!' };
-        }
-        
-        // Check if already best friends
-        if (profile.bestFriends.includes(bestFriendUsername)) {
-            return { success: false, message: 'This user is already your best friend!' };
-        }
-        
-        // Add to best friends (only one direction needed)
-        profile.bestFriends.push(bestFriendUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${bestFriendUsername} is now your best friend!` };
-    }
-
-    // Remove user from best friends
-    removeBestFriend(username, formerBestFriendUsername) {
-        const profile = this.getProfile(username);
-        
-        profile.bestFriends = profile.bestFriends.filter(friend => friend !== formerBestFriendUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${formerBestFriendUsername} is no longer your best friend.` };
-    }
-
-    // Block a user
-    blockUser(blockerUsername, blockedUsername) {
-        if (blockerUsername === blockedUsername) {
-            return { success: false, message: 'You cannot block yourself!' };
-        }
-        
-        const blockerProfile = this.getProfile(blockerUsername);
-        const blockedProfile = this.getProfile(blockedUsername);
-        
-        // Check if already blocked
-        if (blockerProfile.blockedUsers.includes(blockedUsername)) {
-            return { success: false, message: 'You have already blocked this user!' };
-        }
-        
-        // Add to blocked users
-        blockerProfile.blockedUsers.push(blockedUsername);
-        
-        // Remove from friends if applicable
-        blockerProfile.friends = blockerProfile.friends.filter(friend => friend !== blockedUsername);
-        blockerProfile.bestFriends = blockerProfile.bestFriends.filter(friend => friend !== blockedUsername);
-        
-        // Remove from followers/following
-        blockerProfile.following = blockerProfile.following.filter(user => user !== blockedUsername);
-        blockerProfile.followers = blockerProfile.followers.filter(user => user !== blockedUsername);
-        
-        // Remove from requests
-        blockerProfile.friendRequests = blockerProfile.friendRequests.filter(user => user !== blockedUsername);
-        blockerProfile.sentFriendRequests = blockerProfile.sentFriendRequests.filter(user => user !== blockedUsername);
-        
-        // Also remove from blocked user's side
-        blockedProfile.friends = blockedProfile.friends.filter(friend => friend !== blockerUsername);
-        blockedProfile.bestFriends = blockedProfile.bestFriends.filter(friend => friend !== blockerUsername);
-        blockedProfile.following = blockedProfile.following.filter(user => user !== blockerUsername);
-        blockedProfile.followers = blockedProfile.followers.filter(user => user !== blockerUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${blockedUsername} has been blocked.` };
-    }
-
-    // Unblock a user
-    unblockUser(unblockerUsername, unblockedUsername) {
-        const unblockerProfile = this.getProfile(unblockerUsername);
-        
-        unblockerProfile.blockedUsers = unblockerProfile.blockedUsers.filter(user => user !== unblockedUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `${unblockedUsername} has been unblocked.` };
+        return { success: true, message: `Pedido de amizade de ${senderUsername} recusado.` };
     }
 
     // Check if two users are friends
@@ -664,70 +368,17 @@ class ProfileManager {
         return profile1.friends.includes(user2);
     }
 
-    // Check if user is following another user
-    isFollowing(follower, following) {
-        const followerProfile = this.getProfile(follower);
-        return followerProfile.following.includes(following);
-    }
-
-    // Check if user is a best friend
-    isBestFriend(user1, user2) {
-        const profile1 = this.getProfile(user1);
-        return profile1.bestFriends.includes(user2);
-    }
-
-    // Check if user is blocked
-    isBlocked(blocker, blocked) {
-        const blockerProfile = this.getProfile(blocker);
-        return blockerProfile.blockedUsers.includes(blocked);
-    }
-
-    // Check if a friend request has been sent
+    // Check if a request has been sent
     hasSentRequest(sender, receiver) {
         const senderProfile = this.getProfile(sender);
-        return senderProfile.sentFriendRequests.includes(receiver);
+        return senderProfile.sentRequests.includes(receiver);
     }
 
-    // Check if a friend request has been received
+    // Check if a request has been received
     hasReceivedRequest(receiver, sender) {
         const receiverProfile = this.getProfile(receiver);
-        return receiverProfile.friendRequests.includes(sender);
+        return receiverProfile.receivedRequests.includes(sender);
     }
-
-    // Get friend count
-    getFriendCount(username) {
-        const profile = this.getProfile(username);
-        return profile.friends.length;
-    }
-
-    // Get followers count
-    getFollowersCount(username) {
-        const profile = this.getProfile(username);
-        return profile.followers.length;
-    }
-
-    // Get following count
-    getFollowingCount(username) {
-        const profile = this.getProfile(username);
-        return profile.following.length;
-    }
-
-    // Update last online status
-    updateLastOnline(username) {
-        const profile = this.getProfile(username);
-        profile.lastOnline = new Date().toISOString();
-        this.saveProfiles();
-    }
-
-    // Get user's online status
-    getOnlineStatus(username) {
-        const profile = this.getProfile(username);
-        return {
-            status: profile.status,
-            lastOnline: profile.lastOnline
-        };
-    }
-
 
     // Add a game to favorites
     addFavorite(username, gameTitle) {
@@ -2156,274 +1807,80 @@ function syncEquippedHatFromProfile() {
 // Initial sync on script load in case user is already logged in and revisiting
 try { syncEquippedHatFromProfile(); } catch (e) {}
 
-// ========== ROBLOX-STYLE FRIENDS SYSTEM UI ==========
-
-function switchFriendTab(subtab) {
-    // Update sub-tab buttons
-    document.querySelectorAll('.friend-subtab').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.subtab === subtab) {
-            btn.classList.add('active');
-        }
-    });
-    
-    // Hide all content sections
-    document.querySelectorAll('.friend-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    
-    // Show selected content
-    const selectedContent = document.getElementById(`${subtab}-content`);
-    if (selectedContent) {
-        selectedContent.classList.add('active');
-    }
-    
-    // Update stats highlighting
-    document.querySelectorAll('.friends-stats .stat-item').forEach(stat => {
-        stat.classList.remove('active');
-    });
-}
-
+// Friend Request Functionality
 function renderFriendLists() {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        document.getElementById('friends-list').innerHTML = '<p class="empty-message">Log in to see and manage your friends.</p>';
-        document.getElementById('friend-requests-list').innerHTML = '';
-        document.getElementById('sent-requests-list').innerHTML = '';
-        document.getElementById('followers-list').innerHTML = '';
-        document.getElementById('following-list').innerHTML = '';
-        document.getElementById('user-search-results').innerHTML = '<p class="empty-message">Search for users to add as friend.</p>';
-        // Update counts
-        document.getElementById('friends-count').textContent = '0';
-        document.getElementById('followers-count').textContent = '0';
-        document.getElementById('following-count').textContent = '0';
+        document.getElementById('friends-list').innerHTML = '<p class="empty-message">Faça login para ver e gerenciar seus amigos.</p>';
+        document.getElementById('incoming-requests').innerHTML = '';
+        document.getElementById('outgoing-requests').innerHTML = '';
+        document.getElementById('user-search-results').innerHTML = '<p class="empty-message">Procure por usuários para adicionar como amigo.</p>';
         return;
     }
 
     const profile = profileManager.getProfile(currentUser);
-    
-    // Update counts
-    document.getElementById('friends-count').textContent = profile.friends.length;
-    document.getElementById('followers-count').textContent = profile.followers.length;
-    document.getElementById('following-count').textContent = profile.following.length;
-    
-    // Update request badges
-    const requestBadge = document.getElementById('request-count-badge');
-    const sentBadge = document.getElementById('sent-count-badge');
-    
-    if (profile.friendRequests.length > 0) {
-        requestBadge.textContent = profile.friendRequests.length;
-        requestBadge.style.display = 'inline-block';
-    } else {
-        requestBadge.style.display = 'none';
-    }
-    
-    if (profile.sentFriendRequests.length > 0) {
-        sentBadge.textContent = profile.sentFriendRequests.length;
-        sentBadge.style.display = 'inline-block';
-    } else {
-        sentBadge.style.display = 'none';
-    }
 
-    // Render friends with online/offline status
-    renderFriends(profile);
-    
-    // Render friend requests
-    renderFriendRequests(profile);
-    
-    // Render sent requests
-    renderSentRequests(profile);
-    
-    // Render followers
-    renderFollowers(profile);
-    
-    // Render following
-    renderFollowing(profile);
-}
-
-function renderFriends(profile) {
+    // Render current friends
     const friendsListContainer = document.getElementById('friends-list');
     if (profile.friends.length === 0) {
-        friendsListContainer.innerHTML = '<p class="empty-message">No friends yet. Add some friends!</p>';
+        friendsListContainer.innerHTML = '<p class="empty-message">Nenhum amigo ainda.</p>';
     } else {
         friendsListContainer.innerHTML = profile.friends.map(friend => {
             const friendProfile = profileManager.getProfile(friend);
-            const safeFriend = typeof friend === 'string' ? friend : 'Unknown';
-            const isOnline = friendProfile.status === 'Online';
-            const isBestFriend = profile.bestFriends.includes(friend);
-            
+            const safeFriend = typeof friend === 'string' ? friend : 'Desconhecido';
             const friendAvatarHtml = friendProfile.profilePicture 
                 ? `<img src="${escapeHtml(friendProfile.profilePicture)}" alt="${escapeHtml(safeFriend)} Avatar">`
-                : `<div class="avatar-placeholder-small">${escapeHtml(safeFriend.charAt(0).toUpperCase())}</div>`;
-            
-            const statusClass = isOnline ? 'online' : 'offline';
-            const statusText = isOnline ? 'Online' : 'Offline';
-            const bestFriendBadge = isBestFriend ? '<span class="best-friend-badge">★ Best Friend</span>' : '';
-            
+                : `<div class="avatar-placeholder-small">${escapeHtml(safeFriend.charAt(0).toUpperCase())}</div>`; 
             return `
                 <div class="friend-card">
                     <div class="friend-avatar">${friendAvatarHtml}</div>
-                    <div class="friend-info">
-                        <span class="friend-name">${escapeHtml(safeFriend)}</span>
-                        <span class="friend-status ${statusClass}">${statusText}</span>
-                        ${bestFriendBadge}
-                    </div>
-                    <div class="friend-actions">
-                        <button class="icon-button" onclick="unfriendUser('${escapeHtml(safeFriend)}')" title="Unfriend">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                                <circle cx="8.5" cy="7" r="4"></circle>
-                                <line x1="23" y1="11" x2="17" y2="11"></line>
-                            </svg>
-                        </button>
-                        <button class="icon-button" onclick="blockUser('${escapeHtml(safeFriend)}')" title="Block">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
-                            </svg>
-                        </button>
-                    </div>
+                    <span class="friend-name">${escapeHtml(safeFriend)}</span>
                 </div>
             `;
         }).join('');
     }
-}
 
-function renderFriendRequests(profile) {
-    const requestsListContainer = document.getElementById('friend-requests-list');
-    if (profile.friendRequests.length === 0) {
-        requestsListContainer.innerHTML = '<p class="empty-message">No friend requests.</p>';
+    // Render incoming requests
+    const incomingRequestsContainer = document.getElementById('incoming-requests');
+    if (profile.receivedRequests.length === 0) {
+        incomingRequestsContainer.innerHTML = '<p class="empty-message">Nenhum pedido de amizade recebido.</p>';
     } else {
-        requestsListContainer.innerHTML = profile.friendRequests.map(sender => {
+        incomingRequestsContainer.innerHTML = profile.receivedRequests.map(sender => {
             const senderProfile = profileManager.getProfile(sender);
-            const safeSender = typeof sender === 'string' ? sender : 'Unknown';
+            const safeSender = typeof sender === 'string' ? sender : 'Desconhecido';
             const senderAvatarHtml = senderProfile.profilePicture 
                 ? `<img src="${escapeHtml(senderProfile.profilePicture)}" alt="${escapeHtml(safeSender)} Avatar">`
                 : `<div class="avatar-placeholder-small">${escapeHtml(safeSender.charAt(0).toUpperCase())}</div>`;
             return `
                 <div class="request-card">
                     <div class="friend-avatar">${senderAvatarHtml}</div>
-                    <div class="request-info">
-                        <span class="username">${escapeHtml(safeSender)}</span>
-                    </div>
+                    <span class="username">${escapeHtml(safeSender)}</span>
                     <div class="actions">
-                        <button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(sender)}')">Accept</button>
-                        <button class="secondary-button" onclick="declineFriendRequest('${escapeHtml(sender)}')">Decline</button>
+                        <button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(sender)}')">Aceitar</button>
+                        <button class="danger-button" onclick="declineFriendRequest('${escapeHtml(sender)}')">Recusar</button>
                     </div>
                 </div>
             `;
         }).join('');
     }
-}
 
-function renderSentRequests(profile) {
-    const sentListContainer = document.getElementById('sent-requests-list');
-    if (profile.sentFriendRequests.length === 0) {
-        sentListContainer.innerHTML = '<p class="empty-message">No sent friend requests.</p>';
+    // Render outgoing requests
+    const outgoingRequestsContainer = document.getElementById('outgoing-requests');
+    if (profile.sentRequests.length === 0) {
+        outgoingRequestsContainer.innerHTML = '<p class="empty-message">Nenhum pedido de amizade enviado.</p>';
     } else {
-        sentListContainer.innerHTML = profile.sentFriendRequests.map(receiver => {
+        outgoingRequestsContainer.innerHTML = profile.sentRequests.map(receiver => {
             const receiverProfile = profileManager.getProfile(receiver);
-            const safeReceiver = typeof receiver === 'string' ? receiver : 'Unknown';
+            const safeReceiver = typeof receiver === 'string' ? receiver : 'Desconhecido';
             const receiverAvatarHtml = receiverProfile.profilePicture 
                 ? `<img src="${escapeHtml(receiverProfile.profilePicture)}" alt="${escapeHtml(safeReceiver)} Avatar">`
                 : `<div class="avatar-placeholder-small">${escapeHtml(safeReceiver.charAt(0).toUpperCase())}</div>`;
             return `
                 <div class="request-card">
                     <div class="friend-avatar">${receiverAvatarHtml}</div>
-                    <div class="request-info">
-                        <span class="username">${escapeHtml(safeReceiver)}</span>
-                        <span class="friend-status pending">Pending</span>
-                    </div>
+                    <span class="username">${escapeHtml(safeReceiver)}</span>
                     <div class="actions">
-                        <button class="secondary-button" onclick="cancelFriendRequest('${escapeHtml(safeReceiver)}')">Cancel</button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-}
-
-function renderFollowers(profile) {
-    const followersListContainer = document.getElementById('followers-list');
-    if (profile.followers.length === 0) {
-        followersListContainer.innerHTML = '<p class="empty-message">No followers yet.</p>';
-    } else {
-        followersListContainer.innerHTML = profile.followers.map(follower => {
-            const followerProfile = profileManager.getProfile(follower);
-            const safeFollower = typeof follower === 'string' ? follower : 'Unknown';
-            const isOnline = followerProfile.status === 'Online';
-            const isFollowingBack = profile.following.includes(follower);
-            const isFriend = profile.friends.includes(follower);
-            
-            const followerAvatarHtml = followerProfile.profilePicture 
-                ? `<img src="${escapeHtml(followerProfile.profilePicture)}" alt="${escapeHtml(safeFollower)} Avatar">`
-                : `<div class="avatar-placeholder-small">${escapeHtml(safeFollower.charAt(0).toUpperCase())}</div>`;
-            
-            const statusClass = isOnline ? 'online' : 'offline';
-            const statusText = isOnline ? 'Online' : 'Offline';
-            
-            let actionButtons = '';
-            if (isFriend) {
-                actionButtons = '<button class="secondary-button" disabled>Friend</button>';
-            } else if (isFollowingBack) {
-                actionButtons = '<button class="secondary-button" onclick="unfollowUser(\'' + escapeHtml(safeFollower) + '\')">Unfollow</button>';
-            } else {
-                actionButtons = '<button class="primary-button" onclick="followUser(\'' + escapeHtml(safeFollower) + '\')">Follow Back</button>';
-            }
-            
-            return `
-                <div class="follower-card">
-                    <div class="friend-avatar">${followerAvatarHtml}</div>
-                    <div class="request-info">
-                        <span class="username">${escapeHtml(safeFollower)}</span>
-                        <span class="friend-status ${statusClass}">${statusText}</span>
-                    </div>
-                    <div class="actions">
-                        ${actionButtons}
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-}
-
-function renderFollowing(profile) {
-    const followingListContainer = document.getElementById('following-list');
-    if (profile.following.length === 0) {
-        followingListContainer.innerHTML = '<p class="empty-message">Not following anyone yet.</p>';
-    } else {
-        followingListContainer.innerHTML = profile.following.map(following => {
-            const followingProfile = profileManager.getProfile(following);
-            const safeFollowing = typeof following === 'string' ? following : 'Unknown';
-            const isOnline = followingProfile.status === 'Online';
-            const isFollowingBack = profile.followers.includes(following);
-            const isFriend = profile.friends.includes(following);
-            
-            const followingAvatarHtml = followingProfile.profilePicture 
-                ? `<img src="${escapeHtml(followingProfile.profilePicture)}" alt="${escapeHtml(safeFollowing)} Avatar">`
-                : `<div class="avatar-placeholder-small">${escapeHtml(safeFollowing.charAt(0).toUpperCase())}</div>`;
-            
-            const statusClass = isOnline ? 'online' : 'offline';
-            const statusText = isOnline ? 'Online' : 'Offline';
-            
-            let actionButtons = '';
-            if (isFriend) {
-                actionButtons = '<button class="secondary-button" disabled>Friend</button>';
-            } else if (isFollowingBack) {
-                actionButtons = '<button class="secondary-button" onclick="unfollowUser(\'' + escapeHtml(safeFollowing) + '\')">Unfollow</button>';
-            } else {
-                actionButtons = '<button class="secondary-button" onclick="unfollowUser(\'' + escapeHtml(safeFollowing) + '\')">Unfollow</button>';
-            }
-            
-            return `
-                <div class="following-card">
-                    <div class="friend-avatar">${followingAvatarHtml}</div>
-                    <div class="request-info">
-                        <span class="username">${escapeHtml(safeFollowing)}</span>
-                        <span class="friend-status ${statusClass}">${statusText}</span>
-                    </div>
-                    <div class="actions">
-                        ${actionButtons}
+                        <button class="secondary-button" disabled>Pendente</button>
                     </div>
                 </div>
             `;
@@ -2437,12 +1894,12 @@ async function searchUsers() {
     const currentUser = userManager.getCurrentUser();
 
     if (!currentUser) {
-        searchResultsContainer.innerHTML = '<p class="empty-message">Log in to search for users.</p>';
+        searchResultsContainer.innerHTML = '<p class="empty-message">Faça login para procurar usuários.</p>';
         return;
     }
 
     if (!searchInput) {
-        searchResultsContainer.innerHTML = '<p class="empty-message">Enter a username to search.</p>';
+        searchResultsContainer.innerHTML = '<p class="empty-message">Digite um nome de usuário para procurar.</p>';
         return;
     }
 
@@ -2451,59 +1908,33 @@ async function searchUsers() {
     const filteredUsers = matchingUsers.filter(username => username !== currentUser);
 
     if (filteredUsers.length === 0) {
-        searchResultsContainer.innerHTML = `<p class="empty-message">No users found with "${escapeHtml(searchInput)}".</p>`;
+        searchResultsContainer.innerHTML = `<p class="empty-message">Nenhum usuário encontrado com "${escapeHtml(searchInput)}".</p>`;
         return;
     }
 
     const currentUserProfile = profileManager.getProfile(currentUser);
 
-    // Fetch user profile data for each user
-    const userPromises = filteredUsers.map(async (user) => {
-        const userProfile = await userManager.getUserProfile(user);
-        return {
-            username: user,
-            profile: userProfile
-        };
-    });
-
-    const userResults = await Promise.all(userPromises);
-
-    searchResultsContainer.innerHTML = userResults.map(({ username, profile }) => {
-        const safeUser = username;
-        const userData = profile || {};
-        
-        // Use server data or fallback to defaults
-        const displayName = userData.displayName || safeUser;
-        const about = userData.about || '';
-        const friendCount = userData.friendCount || 0;
-        
-        // Get friend/relationship status from current user's profile
-        const isFriend = currentUserProfile.friends.includes(safeUser);
-        const isFollowing = currentUserProfile.following.includes(safeUser);
-        const hasSentRequest = currentUserProfile.sentFriendRequests.includes(safeUser);
-        const hasReceivedRequest = currentUserProfile.friendRequests.includes(safeUser);
-        const isBlocked = currentUserProfile.blockedUsers.includes(safeUser);
-        
-        const userAvatarHtml = `<div class="avatar-placeholder-small">${escapeHtml(safeUser.charAt(0).toUpperCase())}</div>`;
+    searchResultsContainer.innerHTML = filteredUsers.map(user => {
+        const userProfile = profileManager.getProfile(user);
+        const safeUser = typeof user === 'string' ? user : 'Desconhecido';
+        const userAvatarHtml = userProfile.profilePicture 
+            ? `<img src="${escapeHtml(userProfile.profilePicture)}" alt="${escapeHtml(safeUser)} Avatar">`
+            : `<div class="avatar-placeholder-small">${escapeHtml(safeUser.charAt(0).toUpperCase())}</div>`;
 
         let buttonHtml;
-        
-        if (isBlocked) {
-            buttonHtml = '<button class="secondary-button" onclick="unblockUser(\'' + escapeHtml(safeUser) + '\')">Unblock</button>';
+        if (currentUserProfile.friends.includes(safeUser)) {
+            buttonHtml = '<button class="secondary-button" disabled>Amigo</button>';
+        } else if (currentUserProfile.sentRequests.includes(safeUser)) {
+            buttonHtml = '<button class="secondary-button" disabled>Pedido Enviado</button>';
+        } else if (currentUserProfile.receivedRequests.includes(safeUser)) {
+            buttonHtml = `<button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(safeUser)}')">Aceitar Pedido</button>`;
         } else {
-            buttonHtml = `
-                <button class="primary-button" onclick="sendFriendRequest('${escapeHtml(safeUser)}')">Add Friend</button>
-                <button class="secondary-button" onclick="followUser('${escapeHtml(safeUser)}')">Follow</button>
-            `;
+            buttonHtml = `<button class="primary-button" onclick="sendFriendRequest('${escapeHtml(safeUser)}')">Adicionar Amigo</button>`;
         }
-        
         return `
             <div class="user-card">
                 <div class="friend-avatar">${userAvatarHtml}</div>
-                <div class="user-info">
-                    <span class="username">${escapeHtml(safeUser)}</span>
-                    <span class="friend-count">${friendCount} Friends</span>
-                </div>
+                <span class="username">${escapeHtml(safeUser)}</span>
                 <div class="actions">
                     ${buttonHtml}
                 </div>
@@ -2515,32 +1946,32 @@ async function searchUsers() {
 async function sendFriendRequest(receiverUsername) {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        await alert('You need to be logged in to send friend requests.');
+        await alert('Você precisa estar logado para enviar pedidos de amizade.');
         return;
     }
 
     const result = await profileManager.sendFriendRequest(currentUser, receiverUsername);
-    await alert(result.message || (result.success ? 'Friend request sent!' : 'Failed to send friend request.'));
+    await alert(result.message);
     if (result.success) {
-        renderFriendLists();
-        searchUsers();
+        renderFriendLists(); 
+        searchUsers(); 
     }
 }
 
 async function acceptFriendRequest(senderUsername) {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        await alert('You need to be logged in to accept friend requests.');
+        await alert('Você precisa estar logado para aceitar pedidos de amizade.');
         return;
     }
 
-    const result = await confirm(`Are you sure you want to accept the friend request from ${escapeHtml(senderUsername)}?`);
+    const result = await confirm(`Tem certeza que deseja aceitar o pedido de amizade de ${escapeHtml(senderUsername)}?`);
     if (result) {
         const acceptResult = profileManager.acceptFriendRequest(currentUser, senderUsername);
         await alert(acceptResult.message);
         if (acceptResult.success) {
             renderFriendLists();
-            searchUsers();
+            searchUsers(); 
         }
     }
 }
@@ -2548,155 +1979,17 @@ async function acceptFriendRequest(senderUsername) {
 async function declineFriendRequest(senderUsername) {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        await alert('You need to be logged in to decline friend requests.');
+        await alert('Você precisa estar logado para recusar pedidos de amizade.');
         return;
     }
 
-    const result = await confirm(`Are you sure you want to decline the friend request from ${escapeHtml(senderUsername)}?`);
+    const result = await confirm(`Tem certeza que deseja recusar o pedido de amizade de ${escapeHtml(senderUsername)}?`);
     if (result) {
         const declineResult = profileManager.declineFriendRequest(currentUser, senderUsername);
         await alert(declineResult.message);
         if (declineResult.success) {
             renderFriendLists();
-            searchUsers();
-        }
-    }
-}
-
-async function cancelFriendRequest(receiverUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in to cancel friend requests.');
-        return;
-    }
-
-    const result = await confirm(`Are you sure you want to cancel the friend request to ${escapeHtml(receiverUsername)}?`);
-    if (result) {
-        const cancelResult = profileManager.cancelFriendRequest(currentUser, receiverUsername);
-        await alert(cancelResult.message);
-        if (cancelResult.success) {
-            renderFriendLists();
-            searchUsers();
-        }
-    }
-}
-
-async function unfriendUser(friendUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in to unfriend users.');
-        return;
-    }
-
-    const result = await confirm(`Are you sure you want to unfriend ${escapeHtml(friendUsername)}?`);
-    if (result) {
-        const unfriendResult = profileManager.unfriendUser(currentUser, friendUsername);
-        await alert(unfriendResult.message);
-        if (unfriendResult.success) {
-            renderFriendLists();
-            searchUsers();
-        }
-    }
-}
-
-async function followUser(followUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in to follow users.');
-        return;
-    }
-
-    const result = profileManager.followUser(currentUser, followUsername);
-    await alert(result.message);
-    if (result.success) {
-        renderFriendLists();
-        searchUsers();
-    }
-}
-
-async function unfollowUser(unfollowUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in to unfollow users.');
-        return;
-    }
-
-    const result = await confirm(`Are you sure you want to unfollow ${escapeHtml(unfollowUsername)}?`);
-    if (result) {
-        const unfollowResult = profileManager.unfollowUser(currentUser, unfollowUsername);
-        await alert(unfollowResult.message);
-        if (unfollowResult.success) {
-            renderFriendLists();
-            searchUsers();
-        }
-    }
-}
-
-async function addBestFriend(bestFriendUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in to add best friends.');
-        return;
-    }
-
-    const result = profileManager.addBestFriend(currentUser, bestFriendUsername);
-    await alert(result.message);
-    if (result.success) {
-        renderFriendLists();
-        searchUsers();
-    }
-}
-
-async function removeBestFriend(formerBestFriendUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in.');
-        return;
-    }
-
-    const result = await confirm(`Are you sure you want to remove ${escapeHtml(formerBestFriendUsername)} from your best friends?`);
-    if (result) {
-        const removeResult = profileManager.removeBestFriend(currentUser, formerBestFriendUsername);
-        await alert(removeResult.message);
-        if (removeResult.success) {
-            renderFriendLists();
-            searchUsers();
-        }
-    }
-}
-
-async function blockUser(blockedUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in to block users.');
-        return;
-    }
-
-    const result = await confirm(`Are you sure you want to block ${escapeHtml(blockedUsername)}? This will remove them from your friends and prevent them from following you.`);
-    if (result) {
-        const blockResult = profileManager.blockUser(currentUser, blockedUsername);
-        await alert(blockResult.message);
-        if (blockResult.success) {
-            renderFriendLists();
-            searchUsers();
-        }
-    }
-}
-
-async function unblockUser(unblockedUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('You need to be logged in to unblock users.');
-        return;
-    }
-
-    const result = await confirm(`Are you sure you want to unblock ${escapeHtml(unblockedUsername)}?`);
-    if (result) {
-        const unblockResult = profileManager.unblockUser(currentUser, unblockedUsername);
-        await alert(unblockResult.message);
-        if (unblockResult.success) {
-            renderFriendLists();
-            searchUsers();
+            searchUsers(); 
         }
     }
 }
@@ -3085,14 +2378,12 @@ document.getElementById('remove-profile-picture')?.addEventListener('click', asy
 // Event listener for logout button
 document.getElementById('logout-button')?.addEventListener('click', logoutUser);
 
-// Event listeners for friend request functionality - wait for DOM to be ready
-document.addEventListener('DOMContentLoaded', function() {
-    document.getElementById('search-users-button')?.addEventListener('click', searchUsers);
-    document.getElementById('user-search-input')?.addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            searchUsers();
-        }
-    });
+// Event listeners for friend request functionality
+document.getElementById('search-users-button')?.addEventListener('click', searchUsers);
+document.getElementById('user-search-input')?.addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        searchUsers();
+    }
 });
 
 
@@ -4173,15 +3464,6 @@ window.openBlog = openBlog;
 window.sendFriendRequest = sendFriendRequest;
 window.acceptFriendRequest = acceptFriendRequest;
 window.declineFriendRequest = declineFriendRequest;
-window.cancelFriendRequest = cancelFriendRequest;
-window.unfriendUser = unfriendUser;
-window.followUser = followUser;
-window.unfollowUser = unfollowUser;
-window.addBestFriend = addBestFriend;
-window.removeBestFriend = removeBestFriend;
-window.blockUser = blockUser;
-window.unblockUser = unblockUser;
-window.switchFriendTab = switchFriendTab;
 
 // Creation Board functions
 window.showCreationBoard = showCreationBoard;

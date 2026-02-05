@@ -29,18 +29,7 @@ const {
     loginAccount,
     updateAccountPassword,
     deleteAccount,
-    getAccount,
-    getAllAccounts,
-    // Friend functions
-    getPlayerFriends,
-    addFriend,
-    removeFriend,
-    sendFriendRequest,
-    acceptFriendRequest,
-    declineFriendRequest,
-    cancelFriendRequest,
-    getFriendRequests,
-    isFriend
+    getAccount
 } = require('./database');
 
 const app = express();
@@ -188,20 +177,12 @@ app.get('/api/users/search', async (req, res) => {
         if (!q || q.length < 1) {
             return res.json({ users: [] });
         }
-        // Get all usernames from both players and accounts tables
-        const [nicknames, accounts] = await Promise.all([
-            getAllNicknames(),
-            getAllAccounts()
-        ]);
-        
-        // Combine and deduplicate all usernames
-        const allUsernames = [...new Set([...nicknames, ...accounts])];
-        
-        // Filter by search query
-        const matchingUsers = allUsernames.filter(username => 
-            username.toLowerCase().includes(q.toLowerCase())
+        // Since we can't do LIKE queries easily in sql.js, we'll get all nicknames from players table
+        // Note: This only searches players who have played the game, not all registered accounts
+        const nicknames = await getAllNicknames();
+        const matchingUsers = nicknames.filter(nickname => 
+            nickname.toLowerCase().includes(q.toLowerCase())
         );
-        
         res.json({ users: matchingUsers.slice(0, 10) }); // Return max 10 results
     } catch (error) {
         console.error('Error searching users:', error);
@@ -222,198 +203,6 @@ app.get('/api/users/exists/:username', async (req, res) => {
         });
     } catch (error) {
         console.error('Error checking user exists:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Get user profile data (for friends display)
-app.get('/api/user-profile/:username', async (req, res) => {
-    try {
-        const { username } = req.params;
-        
-        // First check if user exists in accounts or players
-        const account = await getAccount(username);
-        const player = await getPlayerByNickname(username);
-        
-        if (!account && !player) {
-            return res.json({ exists: false });
-        }
-        
-        // If player profile exists, return full data
-        if (player) {
-            const friendsData = await getPlayerFriends(username);
-            return res.json({
-                exists: true,
-                username: player.nickname,
-                displayName: player.displayName || player.nickname,
-                about: player.about || '',
-                joinDate: player.joinDate || '',
-                placeId: player.placeId || null,
-                friends: friendsData.friends || [],
-                followers: friendsData.followers || [],
-                following: friendsData.following || [],
-                friendCount: friendsData.friendCount || 0
-            });
-        }
-        
-        // If only account exists (no player profile yet), return basic data
-        res.json({
-            exists: true,
-            username: account.username,
-            displayName: account.username,
-            about: '',
-            joinDate: account.createdAt || '',
-            placeId: null,
-            friends: [],
-            followers: [],
-            following: [],
-            friendCount: 0
-        });
-    } catch (error) {
-        console.error('Error getting user profile:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// ========== FRIEND API ENDPOINTS ==========
-
-// Get user's friends data
-app.get('/api/friends/:username', async (req, res) => {
-    try {
-        const { username } = req.params;
-        const friendsData = await getPlayerFriends(username);
-        res.json(friendsData);
-    } catch (error) {
-        console.error('Error getting friends:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Get friend requests
-app.get('/api/friend-requests/:username', async (req, res) => {
-    try {
-        const { username } = req.params;
-        const requests = await getFriendRequests(username);
-        res.json(requests);
-    } catch (error) {
-        console.error('Error getting friend requests:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Check if users are friends
-app.get('/api/is-friend/:user1/:user2', async (req, res) => {
-    try {
-        const { user1, user2 } = req.params;
-        const result = await isFriend(user1, user2);
-        res.json({ isFriend: result });
-    } catch (error) {
-        console.error('Error checking friendship:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Send friend request
-app.post('/api/friends/send-request', async (req, res) => {
-    try {
-        const { sender, receiver } = req.body;
-        if (!sender || !receiver) {
-            return res.status(400).json({ success: false, message: 'Missing sender or receiver' });
-        }
-        const result = await sendFriendRequest(sender, receiver);
-        res.json(result);
-    } catch (error) {
-        console.error('Error sending friend request:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Accept friend request
-app.post('/api/friends/accept', async (req, res) => {
-    try {
-        const { accepter, sender } = req.body;
-        if (!accepter || !sender) {
-            return res.status(400).json({ success: false, message: 'Missing accepter or sender' });
-        }
-        const result = await acceptFriendRequest(accepter, sender);
-        res.json(result);
-    } catch (error) {
-        console.error('Error accepting friend request:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Decline friend request
-app.post('/api/friends/decline', async (req, res) => {
-    try {
-        const { decliner, sender } = req.body;
-        if (!decliner || !sender) {
-            return res.status(400).json({ success: false, message: 'Missing decliner or sender' });
-        }
-        const result = await declineFriendRequest(decliner, sender);
-        res.json(result);
-    } catch (error) {
-        console.error('Error declining friend request:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Cancel friend request
-app.post('/api/friends/cancel-request', async (req, res) => {
-    try {
-        const { sender, receiver } = req.body;
-        if (!sender || !receiver) {
-            return res.status(400).json({ success: false, message: 'Missing sender or receiver' });
-        }
-        const result = await cancelFriendRequest(sender, receiver);
-        res.json(result);
-    } catch (error) {
-        console.error('Error canceling friend request:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Add friend (after acceptance)
-app.post('/api/friends/add', async (req, res) => {
-    try {
-        const { user1, user2 } = req.body;
-        if (!user1 || !user2) {
-            return res.status(400).json({ success: false, message: 'Missing users' });
-        }
-        const result = await addFriend(user1, user2);
-        res.json(result);
-    } catch (error) {
-        console.error('Error adding friend:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Remove friend
-app.post('/api/friends/remove', async (req, res) => {
-    try {
-        const { user1, user2 } = req.body;
-        if (!user1 || !user2) {
-            return res.status(400).json({ success: false, message: 'Missing users' });
-        }
-        const result = await removeFriend(user1, user2);
-        res.json(result);
-    } catch (error) {
-        console.error('Error removing friend:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-});
-
-// Search users
-app.get('/api/users/search', async (req, res) => {
-    try {
-        const query = req.query.q || '';
-        const nicknames = await getAllNicknames();
-        const matchingUsers = nicknames.filter(nickname => 
-            nickname.toLowerCase().includes(query.toLowerCase())
-        );
-        res.json({ users: matchingUsers });
-    } catch (error) {
-        console.error('Error searching users:', error);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 });
