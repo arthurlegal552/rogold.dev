@@ -300,86 +300,6 @@ class ProfileManager {
         return false;
     }
 
-    // Send a friend request
-    async sendFriendRequest(senderUsername, receiverUsername) {
-        if (senderUsername === receiverUsername) {
-            return { success: false, message: 'Você não pode enviar um pedido de amizade para si mesmo!' };
-        }
-        const userExists = await this.userManager.userExists(receiverUsername);
-        if (!userExists) {
-            return { success: false, message: 'Usuário não encontrado.' };
-        }
-
-        const senderProfile = this.getProfile(senderUsername);
-        const receiverProfile = this.getProfile(receiverUsername);
-
-        if (senderProfile.friends.includes(receiverUsername)) {
-            return { success: false, message: 'Vocês já são amigos!' };
-        }
-        if (senderProfile.sentRequests.includes(receiverUsername)) {
-            return { success: false, message: 'Você já enviou um pedido de amizade para este usuário!' };
-        }
-        if (senderProfile.receivedRequests.includes(receiverUsername)) {
-            return { success: false, message: 'Este usuário já enviou um pedido de amizade para você! Aceite-o.' };
-        }
-
-        senderProfile.sentRequests.push(receiverUsername);
-        receiverProfile.receivedRequests.push(senderUsername);
-        this.saveProfiles();
-        return { success: true, message: `Pedido de amizade enviado para ${receiverUsername}!` };
-    }
-
-    // Accept a friend request
-    acceptFriendRequest(accepterUsername, senderUsername) {
-        const accepterProfile = this.getProfile(accepterUsername);
-        const senderProfile = this.getProfile(senderUsername);
-
-        // Remove from received requests
-        accepterProfile.receivedRequests = accepterProfile.receivedRequests.filter(user => user !== senderUsername);
-        // Add to friends list for accepter
-        accepterProfile.friends.push(senderUsername);
-
-        // Remove from sent requests for sender
-        senderProfile.sentRequests = senderProfile.sentRequests.filter(user => user !== accepterUsername);
-        // Add to friends list for sender
-        senderProfile.friends.push(accepterUsername);
-        
-        this.saveProfiles();
-        return { success: true, message: `Você e ${senderUsername} agora são amigos!` };
-    }
-
-    // Decline a friend request
-    declineFriendRequest(declinerUsername, senderUsername) {
-        const declinerProfile = this.getProfile(declinerUsername);
-        const senderProfile = this.getProfile(senderUsername);
-
-        // Remove from received requests for decliner
-        declinerProfile.receivedRequests = declinerProfile.receivedRequests.filter(user => user !== senderUsername);
-        // Remove from sent requests for sender
-        senderProfile.sentRequests = senderProfile.sentRequests.filter(user => user !== declinerUsername);
-
-        this.saveProfiles();
-        return { success: true, message: `Pedido de amizade de ${senderUsername} recusado.` };
-    }
-
-    // Check if two users are friends
-    areFriends(user1, user2) {
-        const profile1 = this.getProfile(user1);
-        return profile1.friends.includes(user2);
-    }
-
-    // Check if a request has been sent
-    hasSentRequest(sender, receiver) {
-        const senderProfile = this.getProfile(sender);
-        return senderProfile.sentRequests.includes(receiver);
-    }
-
-    // Check if a request has been received
-    hasReceivedRequest(receiver, sender) {
-        const receiverProfile = this.getProfile(receiver);
-        return receiverProfile.receivedRequests.includes(sender);
-    }
-
     // Add a game to favorites
     addFavorite(username, gameTitle) {
         const profile = this.getProfile(username);
@@ -1609,10 +1529,8 @@ async function updateProfileTabs() {
             const targetPanel = document.getElementById(`${targetTab}-tab`);
             if (targetPanel) targetPanel.classList.add('active');
 
-            // Special handling for 'friends' tab
-            if (targetTab === 'friends') {
-                renderFriendLists();
-            } else if (targetTab === 'favorites') {
+            // Special handling for 'favorites' tab
+            if (targetTab === 'favorites') {
                 await renderFavoriteGamesList();
             } else if (targetTab === 'games') {
                 renderUserGamesList();
@@ -1623,9 +1541,7 @@ async function updateProfileTabs() {
     const activeTabButton = document.querySelector('.profile-tabs .tab-button.active');
     if (activeTabButton) {
         const targetTab = activeTabButton.dataset.tab;
-        if (targetTab === 'friends') {
-            renderFriendLists();
-        } else if (targetTab === 'favorites') {
+        if (targetTab === 'favorites') {
             await renderFavoriteGamesList();
         } else if (targetTab === 'games') {
             renderUserGamesList();
@@ -1806,193 +1722,6 @@ function syncEquippedHatFromProfile() {
 
 // Initial sync on script load in case user is already logged in and revisiting
 try { syncEquippedHatFromProfile(); } catch (e) {}
-
-// Friend Request Functionality
-function renderFriendLists() {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        document.getElementById('friends-list').innerHTML = '<p class="empty-message">Faça login para ver e gerenciar seus amigos.</p>';
-        document.getElementById('incoming-requests').innerHTML = '';
-        document.getElementById('outgoing-requests').innerHTML = '';
-        document.getElementById('user-search-results').innerHTML = '<p class="empty-message">Procure por usuários para adicionar como amigo.</p>';
-        return;
-    }
-
-    const profile = profileManager.getProfile(currentUser);
-
-    // Render current friends
-    const friendsListContainer = document.getElementById('friends-list');
-    if (profile.friends.length === 0) {
-        friendsListContainer.innerHTML = '<p class="empty-message">Nenhum amigo ainda.</p>';
-    } else {
-        friendsListContainer.innerHTML = profile.friends.map(friend => {
-            const friendProfile = profileManager.getProfile(friend);
-            const safeFriend = typeof friend === 'string' ? friend : 'Desconhecido';
-            const friendAvatarHtml = friendProfile.profilePicture 
-                ? `<img src="${escapeHtml(friendProfile.profilePicture)}" alt="${escapeHtml(safeFriend)} Avatar">`
-                : `<div class="avatar-placeholder-small">${escapeHtml(safeFriend.charAt(0).toUpperCase())}</div>`; 
-            return `
-                <div class="friend-card">
-                    <div class="friend-avatar">${friendAvatarHtml}</div>
-                    <span class="friend-name">${escapeHtml(safeFriend)}</span>
-                </div>
-            `;
-        }).join('');
-    }
-
-    // Render incoming requests
-    const incomingRequestsContainer = document.getElementById('incoming-requests');
-    if (profile.receivedRequests.length === 0) {
-        incomingRequestsContainer.innerHTML = '<p class="empty-message">Nenhum pedido de amizade recebido.</p>';
-    } else {
-        incomingRequestsContainer.innerHTML = profile.receivedRequests.map(sender => {
-            const senderProfile = profileManager.getProfile(sender);
-            const safeSender = typeof sender === 'string' ? sender : 'Desconhecido';
-            const senderAvatarHtml = senderProfile.profilePicture 
-                ? `<img src="${escapeHtml(senderProfile.profilePicture)}" alt="${escapeHtml(safeSender)} Avatar">`
-                : `<div class="avatar-placeholder-small">${escapeHtml(safeSender.charAt(0).toUpperCase())}</div>`;
-            return `
-                <div class="request-card">
-                    <div class="friend-avatar">${senderAvatarHtml}</div>
-                    <span class="username">${escapeHtml(safeSender)}</span>
-                    <div class="actions">
-                        <button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(sender)}')">Aceitar</button>
-                        <button class="danger-button" onclick="declineFriendRequest('${escapeHtml(sender)}')">Recusar</button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    // Render outgoing requests
-    const outgoingRequestsContainer = document.getElementById('outgoing-requests');
-    if (profile.sentRequests.length === 0) {
-        outgoingRequestsContainer.innerHTML = '<p class="empty-message">Nenhum pedido de amizade enviado.</p>';
-    } else {
-        outgoingRequestsContainer.innerHTML = profile.sentRequests.map(receiver => {
-            const receiverProfile = profileManager.getProfile(receiver);
-            const safeReceiver = typeof receiver === 'string' ? receiver : 'Desconhecido';
-            const receiverAvatarHtml = receiverProfile.profilePicture 
-                ? `<img src="${escapeHtml(receiverProfile.profilePicture)}" alt="${escapeHtml(safeReceiver)} Avatar">`
-                : `<div class="avatar-placeholder-small">${escapeHtml(safeReceiver.charAt(0).toUpperCase())}</div>`;
-            return `
-                <div class="request-card">
-                    <div class="friend-avatar">${receiverAvatarHtml}</div>
-                    <span class="username">${escapeHtml(safeReceiver)}</span>
-                    <div class="actions">
-                        <button class="secondary-button" disabled>Pendente</button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-}
-
-async function searchUsers() {
-    const searchInput = document.getElementById('user-search-input').value.toLowerCase();
-    const searchResultsContainer = document.getElementById('user-search-results');
-    const currentUser = userManager.getCurrentUser();
-
-    if (!currentUser) {
-        searchResultsContainer.innerHTML = '<p class="empty-message">Faça login para procurar usuários.</p>';
-        return;
-    }
-
-    if (!searchInput) {
-        searchResultsContainer.innerHTML = '<p class="empty-message">Digite um nome de usuário para procurar.</p>';
-        return;
-    }
-
-    const matchingUsers = await userManager.searchUsers(searchInput);
-    // Filter out current user
-    const filteredUsers = matchingUsers.filter(username => username !== currentUser);
-
-    if (filteredUsers.length === 0) {
-        searchResultsContainer.innerHTML = `<p class="empty-message">Nenhum usuário encontrado com "${escapeHtml(searchInput)}".</p>`;
-        return;
-    }
-
-    const currentUserProfile = profileManager.getProfile(currentUser);
-
-    searchResultsContainer.innerHTML = filteredUsers.map(user => {
-        const userProfile = profileManager.getProfile(user);
-        const safeUser = typeof user === 'string' ? user : 'Desconhecido';
-        const userAvatarHtml = userProfile.profilePicture 
-            ? `<img src="${escapeHtml(userProfile.profilePicture)}" alt="${escapeHtml(safeUser)} Avatar">`
-            : `<div class="avatar-placeholder-small">${escapeHtml(safeUser.charAt(0).toUpperCase())}</div>`;
-
-        let buttonHtml;
-        if (currentUserProfile.friends.includes(safeUser)) {
-            buttonHtml = '<button class="secondary-button" disabled>Amigo</button>';
-        } else if (currentUserProfile.sentRequests.includes(safeUser)) {
-            buttonHtml = '<button class="secondary-button" disabled>Pedido Enviado</button>';
-        } else if (currentUserProfile.receivedRequests.includes(safeUser)) {
-            buttonHtml = `<button class="primary-button" onclick="acceptFriendRequest('${escapeHtml(safeUser)}')">Aceitar Pedido</button>`;
-        } else {
-            buttonHtml = `<button class="primary-button" onclick="sendFriendRequest('${escapeHtml(safeUser)}')">Adicionar Amigo</button>`;
-        }
-        return `
-            <div class="user-card">
-                <div class="friend-avatar">${userAvatarHtml}</div>
-                <span class="username">${escapeHtml(safeUser)}</span>
-                <div class="actions">
-                    ${buttonHtml}
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-async function sendFriendRequest(receiverUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('Você precisa estar logado para enviar pedidos de amizade.');
-        return;
-    }
-
-    const result = await profileManager.sendFriendRequest(currentUser, receiverUsername);
-    await alert(result.message);
-    if (result.success) {
-        renderFriendLists(); 
-        searchUsers(); 
-    }
-}
-
-async function acceptFriendRequest(senderUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('Você precisa estar logado para aceitar pedidos de amizade.');
-        return;
-    }
-
-    const result = await confirm(`Tem certeza que deseja aceitar o pedido de amizade de ${escapeHtml(senderUsername)}?`);
-    if (result) {
-        const acceptResult = profileManager.acceptFriendRequest(currentUser, senderUsername);
-        await alert(acceptResult.message);
-        if (acceptResult.success) {
-            renderFriendLists();
-            searchUsers(); 
-        }
-    }
-}
-
-async function declineFriendRequest(senderUsername) {
-    const currentUser = userManager.getCurrentUser();
-    if (!currentUser) {
-        await alert('Você precisa estar logado para recusar pedidos de amizade.');
-        return;
-    }
-
-    const result = await confirm(`Tem certeza que deseja recusar o pedido de amizade de ${escapeHtml(senderUsername)}?`);
-    if (result) {
-        const declineResult = profileManager.declineFriendRequest(currentUser, senderUsername);
-        await alert(declineResult.message);
-        if (declineResult.success) {
-            renderFriendLists();
-            searchUsers(); 
-        }
-    }
-}
 
 // NEW: Function to render favorited games in the profile tab
 async function renderFavoriteGamesList() {
@@ -2377,15 +2106,6 @@ document.getElementById('remove-profile-picture')?.addEventListener('click', asy
 
 // Event listener for logout button
 document.getElementById('logout-button')?.addEventListener('click', logoutUser);
-
-// Event listeners for friend request functionality
-document.getElementById('search-users-button')?.addEventListener('click', searchUsers);
-document.getElementById('user-search-input')?.addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') {
-        searchUsers();
-    }
-});
-
 
 // Function to load and display published games
 async function loadPublishedGames(category = 'all') {
@@ -3461,9 +3181,6 @@ window.hideBlogDetail = hideBlogDetail;
 window.editProfile = editProfile;
 window.closeProfileEdit = closeProfileEdit;
 window.openBlog = openBlog;
-window.sendFriendRequest = sendFriendRequest;
-window.acceptFriendRequest = acceptFriendRequest;
-window.declineFriendRequest = declineFriendRequest;
 
 // Creation Board functions
 window.showCreationBoard = showCreationBoard;
