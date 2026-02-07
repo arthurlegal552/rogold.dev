@@ -5045,6 +5045,12 @@ function equipRocketLauncher() {
     }
 
     document.getElementById('equip-tool-btn').classList.add('equipped');
+    
+    // Change cursor to aim.png when gear is equipped
+    const canvas = document.querySelector('canvas');
+    if (canvas) {
+        canvas.style.cursor = "url('imgs/aim.png'), crosshair";
+    }
 }
 
 function launchRocket() {
@@ -5084,6 +5090,11 @@ function equipTool(toolName) {
             socket.emit("equipTool", { tool: "rocketLauncher" });
         }
         document.getElementById('equip-tool-btn').classList.add('equipped');
+        // Change cursor to aim.png when gear is equipped
+        const canvas = document.querySelector('canvas');
+        if (canvas) {
+            canvas.style.cursor = "url('imgs/aim.png'), crosshair";
+        }
     }
     // Add other tools
 }
@@ -5097,6 +5108,12 @@ function unequipTool() {
     equippedTool = null;
     player.rightArm.rotation.x = 0;
     document.getElementById('equip-tool-btn').classList.remove('equipped');
+    
+    // Change cursor back to mouse.png when unequipping gear
+    const canvas = document.querySelector('canvas');
+    if (canvas) {
+        canvas.style.cursor = "url('imgs/cursor.png'), default";
+    }
 
     if (socket && socket.connected) {
         socket.emit("unequipTool", { tool: "rocketLauncher" });
@@ -5111,7 +5128,7 @@ window.addEventListener('DOMContentLoaded', () => {
     backpackToolBtn.style.bottom = '90px';
     backpackToolBtn.style.width = '50px';
     backpackToolBtn.style.height = '40px';
-    backpackToolBtn.innerHTML = '<img src="imgs/rgld_up.png" alt="backpack" style="width:100%; height:100%; object-fit:cover;">';
+    backpackToolBtn.innerHTML = '<img src="imgs/rgld_up.png" alt="backpack" style="width:80%; height:70%; object-fit:cover;">';
     document.body.appendChild(backpackToolBtn);
     // Hide if rocket launcher not owned or gears not allowed
     if (!ownedGears.includes('gear_rocket_launcher') || !areGearsAllowed()) {

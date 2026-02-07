@@ -103,6 +103,7 @@ body {
 .zoom-controls button:hover {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
+    cursor: pointer !important;
 }
 
 #customize-btn, #respawn-btn, #potions-btn, #script-btn, #controls-mode-btn, #backpack-btn {
@@ -119,34 +120,10 @@ body {
     border-radius: 2px;
 }
 
-#customize-btn:hover {
+#customize-btn:hover, #backpack-btn:hover, #respawn-btn:hover, #potions-btn:hover, #script-btn:hover, #controls-mode-btn:hover {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
-}
-
-#backpack-btn:hover {
-    border: 2px solid #ff0000;
-    box-shadow: 0 0 8px #ff0000;
-}
-
-#respawn-btn:hover {
-    border: 2px solid #ff0000;
-    box-shadow: 0 0 8px #ff0000;
-}
-
-#potions-btn:hover {
-    border: 2px solid #ff0000;
-    box-shadow: 0 0 8px #ff0000;
-}
-
-#script-btn:hover {
-    border: 2px solid #ff0000;
-    box-shadow: 0 0 8px #ff0000;
-}
-
-#controls-mode-btn:hover {
-    border: 2px solid #ff0000;
-    box-shadow: 0 0 8px #ff0000;
+    cursor: pointer !important;
 }
 
 .potions-customizer {
@@ -241,6 +218,7 @@ body {
 
 .script-buttons button:hover {
     background: rgba(20,20,20,0.8);
+    cursor: pointer !important;
 }
 
 #script-output {
@@ -681,6 +659,7 @@ body {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
     outline: none;
+    cursor: pointer !important;
 }
 
 .toolbox {
@@ -779,6 +758,7 @@ body {
 #menu-btn:hover {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
+    cursor: pointer !important;
 }
 
 #menu-btn:active {
@@ -872,7 +852,7 @@ body {
 
 .rogold-gui.textbutton:hover {
     background-color: #a0a0a0;
-    cursor: url('imgs/cursor2.png'), auto; /* Custom cursor */
+    cursor: pointer !important;
 }
 
 .rogold-gui.textbutton:active {

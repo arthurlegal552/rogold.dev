@@ -2,6 +2,68 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+// Global translation variable
+const getCurrentLang = () => localStorage.getItem('rogold_language') || 'pt';
+const getTranslations = () => {
+    const lang = getCurrentLang();
+    // Try to get translations from global scope
+    const transObj = (typeof translations !== 'undefined') ? translations : 
+                    (typeof window.translations !== 'undefined' ? window.translations : {});
+    if (transObj && transObj[lang]) {
+        return transObj[lang];
+    }
+    // Fallback to Portuguese
+    if (transObj && transObj.pt) {
+        return transObj.pt;
+    }
+    return {};
+};
+let t = getTranslations();
+
+// Function to get translation
+function tGet(key, fallback = '') {
+    const translations = getTranslations();
+    return (translations && translations[key]) ? translations[key] : fallback;
+}
+
+// Function to update translations globally
+function updateTranslations() {
+    t = getTranslations();
+    
+    // Update all elements with data-translate attribute
+    document.querySelectorAll('[data-translate]').forEach(el => {
+        const key = el.getAttribute('data-translate');
+        if (t[key]) {
+            el.textContent = t[key];
+        }
+    });
+    
+    // Update page title
+    document.querySelectorAll('title').forEach(el => {
+        if (t['banner-title']) {
+            el.textContent = 'Rogold - ' + t['banner-title'];
+        }
+    });
+    
+    // Update html lang attribute
+    document.documentElement.lang = getCurrentLang();
+}
+
+// Language change handler
+function setupLanguageHandler() {
+    const langSelect = document.getElementById('language-select');
+    if (langSelect) {
+        // Set initial value
+        langSelect.value = getCurrentLang();
+        
+        langSelect.addEventListener('change', (e) => {
+            const newLang = e.target.value;
+            localStorage.setItem('rogold_language', newLang);
+            updateTranslations();
+        });
+    }
+}
+
 // User management system
 class UserManager {
     constructor() {
@@ -977,7 +1039,7 @@ function showCatalog() {
     const currentUser = userManager.getCurrentUser();
 
     if (!currentUser) {
-        alert('Você precisa estar logado para acessar o catálogo.');
+        alert(t['warning-login-catalog']);
         return;
     }
 
@@ -1014,10 +1076,14 @@ function showItemDetail(itemId) {
     const currentUser = userManager.getCurrentUser();
     const userProfile = currentUser ? profileManager.getProfile(currentUser) : null;
 
+    // Get translated item name and description
+    const translatedName = tGet(`item_${itemId}`) || tGet(itemId) || item.name;
+    const translatedDesc = tGet(`item_${itemId}_desc`) || tGet(`${itemId}_desc`) || item.description;
+
     // Update item details
-    document.getElementById('item-detail-title').textContent = item.name;
+    document.getElementById('item-detail-title').textContent = translatedName;
     document.getElementById('item-detail-img').src = item.imageUrl;
-    document.getElementById('item-detail-description').textContent = item.description;
+    document.getElementById('item-detail-description').textContent = translatedDesc;
     document.getElementById('item-purchase-count').textContent = catalogManager.getPurchaseCount(itemId);
     document.getElementById('item-detail-price').textContent = item.price;
 
@@ -1027,15 +1093,15 @@ function showItemDetail(itemId) {
     const isEquipped = userProfile && userProfile.equippedItems[item.type] === item.id;
 
     if (!currentUser) {
-        buttonHtml = `<button class="buy-button" disabled onclick="event.stopPropagation()">Entrar para Comprar</button>`;
+        buttonHtml = `<button class="buy-button" disabled onclick="event.stopPropagation()">${tGet('login-to-view-favorites') || 'Sign in to Buy'}</button>`;
     } else if (isOwned) {
         if (isEquipped) {
-            buttonHtml = `<button class="equipped-button" disabled onclick="event.stopPropagation()">Equipado</button>`;
+            buttonHtml = `<button class="equipped-button" disabled onclick="event.stopPropagation()">${tGet('equipped')}</button>`;
         } else {
-            buttonHtml = `<button class="equip-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'equip')">Equipar</button>`;
+            buttonHtml = `<button class="equip-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'equip')">${tGet('equip')}</button>`;
         }
     } else {
-        buttonHtml = `<button class="buy-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'buy')">Comprar ${item.price}</button>`;
+        buttonHtml = `<button class="buy-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'buy')">${tGet('buy')} ${item.price}</button>`;
     }
 
     document.getElementById('item-detail-actions').innerHTML = buttonHtml;
@@ -1059,19 +1125,22 @@ function hideItemDetail() {
 async function handleCatalogAction(itemId, itemType, action) {
     const currentUser = userManager.getCurrentUser();
     const item = catalogManager.getItemById(itemId);
+    
+    // Get translated item name
+    const translatedName = tGet(`item_${item.id}`) || tGet(item.id) || (item ? item.name : 'Unknown');
 
     if (!item) {
-        await alert('Erro: Item não encontrado no catálogo.');
+        await alert(tGet('warning-item-not-found') || 'Error: Item not found in catalog.');
         return;
     }
 
     if (action === 'buy') {
         if (!currentUser) {
-            await alert('Você precisa estar logado para interagir com o catálogo.');
+            await alert(tGet('warning-login-catalog-interact') || 'You need to be logged in to interact with the catalog.');
             return;
         }
 
-        const confirmBuy = await confirm(`Deseja comprar "${item.name}" por ${item.price} Coins?`);
+        const confirmBuy = await confirm(tGet('confirm-buy').replace('${itemName}', translatedName).replace('${itemPrice}', item.price));
         if (confirmBuy) {
             const subtractResult = profileManager.subtractCoins(currentUser, item.price);
             if (subtractResult.success) {
@@ -1103,7 +1172,7 @@ async function handleCatalogAction(itemId, itemType, action) {
                             window.dispatchEvent(new CustomEvent('rogold_gear_purchased', { detail: { gearId: item.id } }));
                         }
                     }
-                    await alert(`Você comprou "${item.name}"!`);
+                    await alert((tGet('warning-purchased') || 'You bought "${itemName}"!').replace('${itemName}', translatedName));
                     updateUserCoinsDisplay();
                     renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
                 } else {
@@ -1119,11 +1188,11 @@ async function handleCatalogAction(itemId, itemType, action) {
         }
     } else if (action === 'equip') {
         if (!currentUser) {
-            await alert('Você precisa estar logado para interagir com o catálogo.');
+            await alert(tGet('warning-login-catalog-interact') || 'You need to be logged in to interact with the catalog.');
             return;
         }
         if (item.type === 'gear') {
-            await alert('Ferramentas são equipadas no jogo.');
+            await alert(tGet('warning-cannot-equip-gear') || 'Tools are equipped in the game.');
             return;
         }
         const equipResult = profileManager.equipItem(currentUser, item.id, item.type);
@@ -1141,10 +1210,10 @@ async function handleCatalogAction(itemId, itemType, action) {
                     window.dispatchEvent(new Event('rogold_equipped_face_changed'));
                 }
             }
-            await alert(`"${item.name}" equipado com sucesso!`);
+            await alert((tGet('warning-equipped') || '"${itemName}" equipped successfully!').replace('${itemName}', translatedName));
             renderCatalogItems(document.querySelector('.category-button.active').dataset.category);
             // Simulate a socket event for equipping an item
-            console.log(`[SOCKET_EVENT] User ${currentUser} equipped item: { id: "${item.id}", name: "${item.name}", type: "${item.type}" }`);
+            console.log(`[SOCKET_EVENT] User ${currentUser} equipped item: { id: "${item.id}", name: "${translatedName}", type: "${item.type}" }`);
         } else {
             await alert(equipResult.message);
         }
@@ -1187,7 +1256,7 @@ function renderCatalogItems(category) {
     }
 
     if (items.length === 0) {
-        itemsGrid.innerHTML = '<p class="empty-message">Nenhum item disponível nesta categoria.</p>';
+        itemsGrid.innerHTML = '<p class="empty-message">' + (tGet('no-items-category') || 'No items available in this category.') + '</p>';
         return;
     }
 
@@ -1195,27 +1264,30 @@ function renderCatalogItems(category) {
         let buttonHtml = '';
         const isOwned = userProfile && userProfile.inventory.includes(item.id);
         const isEquipped = userProfile && userProfile.equippedItems[item.type] === item.id;
+        
+        // Get translated item name
+        const translatedName = tGet(`item_${item.id}`) || tGet(item.id) || item.name;
 
         if (!currentUser) {
-            buttonHtml = `<button class="buy-button" disabled onclick="event.stopPropagation()">Entrar para Comprar</button>`;
+            buttonHtml = `<button class="buy-button" disabled onclick="event.stopPropagation()">${tGet('login-to-view-favorites') || 'Sign in to Buy'}</button>`;
         } else if (isOwned) {
             if (item.type === 'gear') {
-                buttonHtml = `<button class="equipped-button" disabled onclick="event.stopPropagation()">Comprado</button>`;
+                buttonHtml = `<button class="equipped-button" disabled onclick="event.stopPropagation()">${tGet('purchases')}</button>`;
             } else if (isEquipped) {
-                buttonHtml = `<button class="equipped-button" data-item-id="${item.id}" data-item-type="${item.type}" disabled onclick="event.stopPropagation()">Equipado</button>`;
+                buttonHtml = `<button class="equipped-button" data-item-id="${item.id}" data-item-type="${item.type}" disabled onclick="event.stopPropagation()">${tGet('equipped')}</button>`;
             } else {
-                buttonHtml = `<button class="equip-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'equip')">Equipar</button>`;
+                buttonHtml = `<button class="equip-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'equip')">${tGet('equip')}</button>`;
             }
         } else {
-            buttonHtml = `<button class="buy-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'buy')">Comprar ${item.price}</button>`;
+            buttonHtml = `<button class="buy-button" data-item-id="${item.id}" data-item-type="${item.type}" onclick="event.stopPropagation(); handleCatalogAction('${item.id}', '${item.type}', 'buy')">${tGet('buy')} ${item.price}</button>`;
         }
 
         return `
             <div class="catalog-item-card" onclick="showItemDetail('${item.id}')">
                 <div class="catalog-item-thumbnail">
-                    <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.name)}">
+                    <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(translatedName)}">
                 </div>
-                <h4>${escapeHtml(item.name)}</h4>
+                <h4>${escapeHtml(translatedName)}</h4>
                 <div class="item-price">
                     ${!isOwned ? `<img src="imgs/roglux_coins.png" alt="Coins" class="coins-icon">  ` : ''}
                     ${!isOwned ? item.price : ''}
@@ -1314,20 +1386,20 @@ async function openSettingsModal() {
         showOnlyAuthSection('settings-section');
         setActiveNavLink(null);
     } else {
-        await alert('Você precisa estar logado para acessar as configurações.');
+        await alert(t['warning-login-settings']);
         openLoginModal();
     }
 }
 
 // Function to handle user logout
 async function logoutUser() {
-    const confirmLogout = await confirm('Tem certeza que deseja sair da sua conta?');
+    const confirmLogout = await confirm(t['confirm-logout'] || 'Tem certeza que deseja sair da sua conta?');
     if (confirmLogout) {
         userManager.logout();
         // Clear stored equipped hat on logout and notify viewers
         localStorage.removeItem('rogold_equipped_hat');
         window.dispatchEvent(new Event('rogold_equipped_hat_changed'));
-        await alert('Você saiu da sua conta.');
+        await alert(t['warning-logged-out']);
         
         // Ensure all active content sections and auth forms are hidden
         hideSection(document.getElementById('profile-section'));
@@ -1382,12 +1454,37 @@ async function showProfile(username) {
 
     // Update profile data
     const profile = profileManager.getProfile(username);
-    document.getElementById('profile-username').textContent = username;
-    document.getElementById('profile-bio').textContent = profile.bio;
-    document.querySelector('.profile-status').textContent = `Status: ${profile.status}`;
-    document.getElementById('join-date').textContent = new Date(profile.joinDate).toLocaleDateString('pt-BR');
-    document.getElementById('favorite-count').textContent = profile.favorites.length;
-    document.getElementById('user-coins').textContent = profile.coins;
+    
+    // Update profile username
+    const usernameElement = document.getElementById('profile-username');
+    if (usernameElement) usernameElement.textContent = username;
+    
+    // Update profile bio
+    const bioElement = document.getElementById('profile-bio');
+    if (bioElement) bioElement.textContent = profile.bio;
+    
+    // Update profile status
+    const statusElement = document.querySelector('.profile-status');
+    if (statusElement) statusElement.textContent = `Status: ${profile.status}`;
+    
+    // Update join date
+    const joinDateElement = document.getElementById('join-date');
+    if (joinDateElement) {
+        const joinDate = new Date(profile.joinDate);
+        if (!isNaN(joinDate.getTime())) {
+            joinDateElement.textContent = joinDate.toLocaleDateString('pt-BR');
+        } else {
+            joinDateElement.textContent = '--/--/----';
+        }
+    }
+    
+    // Update favorite count
+    const favoriteCountElement = document.getElementById('favorite-count');
+    if (favoriteCountElement) favoriteCountElement.textContent = profile.favorites.length;
+    
+    // Update user coins
+    const userCoinsElement = document.getElementById('user-coins');
+    if (userCoinsElement) userCoinsElement.textContent = profile.coins;
 
     // Fetch user stats (visits)
     try {
@@ -1728,8 +1825,11 @@ async function renderFavoriteGamesList() {
     const currentUser = userManager.getCurrentUser();
     const favoritesListContainer = document.getElementById('favorite-games-list');
 
+    // Get translations
+    const t = (typeof translations !== 'undefined' && translations[localStorage.getItem('rogold_language') || 'pt']) || {};
+
     if (!currentUser) {
-        favoritesListContainer.innerHTML = '<p class="empty-message">Faça login para ver seus jogos favoritos.</p>';
+        favoritesListContainer.innerHTML = `<p class="empty-message">${t['login-to-view-favorites'] || 'Faça login para ver seus jogos favoritos.'}</p>`;
         return;
     }
 
@@ -1737,7 +1837,7 @@ async function renderFavoriteGamesList() {
     const favorites = profile.favorites;
 
     if (favorites.length === 0) {
-        favoritesListContainer.innerHTML = '<p class="empty-message">Nenhum jogo favorito ainda.</p>';
+        favoritesListContainer.innerHTML = `<p class="empty-message">${t['no-favorites-yet'] || 'Nenhum jogo favorito ainda.'}</p>`;
         return;
     }
 
@@ -1783,6 +1883,11 @@ async function renderFavoriteGamesList() {
     } catch (error) {
         console.error('Error loading favorite games:', error);
         favoritesListContainer.innerHTML = '<p class="empty-message">Erro ao carregar jogos favoritos. Tente novamente.</p>';
+    }
+    
+    // Update button translations
+    if (typeof updateDynamicButtons === 'function') {
+        updateDynamicButtons();
     }
 }
 
@@ -1835,6 +1940,12 @@ function renderUserGamesList() {
         .catch(error => {
             console.error('Error loading user games:', error);
             userGamesContainer.innerHTML = '<p class="empty-message">Erro ao carregar jogos. Tente novamente.</p>';
+        })
+        .finally(() => {
+            // Update button translations
+            if (typeof updateDynamicButtons === 'function') {
+                updateDynamicButtons();
+            }
         });
 }
 
@@ -1842,6 +1953,12 @@ function renderUserGamesList() {
 function updateFeaturedGameCards() {
     const currentUser = userManager.getCurrentUser();
     const gameCards = document.querySelectorAll('#featured-games .game-card');
+
+    // Get translations
+    const t = (typeof translations !== 'undefined' && translations[localStorage.getItem('rogold_language') || 'pt']) || {
+        'favoritar': 'Favoritar',
+        'remover-favorite': 'Remover Favorito'
+    };
 
     gameCards.forEach(card => {
         const gameTitle = card.dataset.gameTitle;
@@ -1875,17 +1992,17 @@ function updateFeaturedGameCards() {
                 const profile = profileManager.getProfile(currentUser);
                 // Use safeGameTitle for includes check
                 if (profile.favorites.includes(safeGameTitle)) {
-                    favoriteButton.textContent = 'Remover Favorito';
+                    favoriteButton.textContent = t['remover-favorite'] || 'Remover Favorito';
                     favoriteButton.classList.add('remove-favorite-button');
                     favoriteButton.classList.remove('add-favorite-button');
                 } else {
-                    favoriteButton.textContent = 'Favoritar';
+                    favoriteButton.textContent = t['favoritar'] || 'Favoritar';
                     favoriteButton.classList.add('add-favorite-button');
                     favoriteButton.classList.remove('remove-favorite-button');
                 }
                 favoriteButton.disabled = false;
             } else {
-                favoriteButton.textContent = 'Favoritar';
+                favoriteButton.textContent = t['favoritar'] || 'Favoritar';
                 favoriteButton.classList.add('add-favorite-button');
                 favoriteButton.classList.remove('remove-favorite-button');
                 favoriteButton.disabled = true;
@@ -1973,7 +2090,7 @@ document.getElementById('login-form-inline')?.addEventListener('submit', async f
     
     const result = await userManager.login(username, password);
     if (result.success) {
-        await alert(`Bem-vindo de volta, ${username}!`);
+        await alert(t['warning-login-success'].replace('${username}', username));
         hideCurrentAuthFormAndShowMainContent();
         updateProfileLink();
         updateFeaturedGameCards();
@@ -1993,13 +2110,13 @@ document.getElementById('register-form-inline')?.addEventListener('submit', asyn
     const confirmPassword = document.getElementById('reg-confirm-password-inline').value;
 
     if (password !== confirmPassword) {
-        await alert('As senhas não coincidem!');
+        await alert(t['warning-passwords-mismatch']);
         return;
     }
 
     const result = await userManager.register(username, password);
     if (result.success) {
-        await alert('Conta criada com sucesso! Faça login.');
+        await alert(t['warning-registered-success']);
         openLoginModal();
     } else {
         await alert(result.message);
@@ -2015,7 +2132,7 @@ document.getElementById('settings-form-inline')?.addEventListener('submit', asyn
     const confirmNewPassword = document.getElementById('confirm-new-password-inline').value;
 
     if (newPassword && newPassword !== confirmNewPassword) {
-        await alert('As novas senhas não coincidem!');
+        await alert(t['warning-passwords-new-mismatch']);
         return;
     }
 
@@ -2027,7 +2144,7 @@ document.getElementById('settings-form-inline')?.addEventListener('submit', asyn
     );
 
     if (result.success) {
-        await alert('Conta atualizada com sucesso!');
+        await alert(t['warning-updated-success']);
         hideCurrentAuthFormAndShowMainContent();
         updateProfileLink();
         updateFeaturedGameCards();
@@ -2100,7 +2217,7 @@ document.getElementById('remove-profile-picture')?.addEventListener('click', asy
             profileAvatarImg.classList.add('hidden');
             avatarPlaceholder.classList.remove('hidden');
         }
-        await alert('Foto de perfil removida.');
+        await alert(t['warning-profile-removed']);
     }
 });
 
@@ -2215,6 +2332,11 @@ async function loadPublishedGames(category = 'all') {
 
     // Update favorite buttons for all games
     updateFeaturedGameCards();
+    
+    // Update button translations
+    if (typeof updateDynamicButtons === 'function') {
+        updateDynamicButtons();
+    }
 }
 
 // Helper functions for updating game cards
@@ -2257,29 +2379,43 @@ async function loadGameDetailSection() {
         currentGameDetailData = await response.json();
 
         // Display game info
-        document.getElementById('game-detail-title').textContent = currentGameDetailData.title || 'Untitled Game';
-        document.getElementById('game-detail-creator').textContent = currentGameDetailData.creator_id || 'Unknown';
-        document.getElementById('game-detail-description').textContent = currentGameDetailData.description || 'No description available.';
+        const gameDetailTitle = document.getElementById('game-detail-title');
+        const gameDetailCreator = document.getElementById('game-detail-creator');
+        const gameDetailDescription = document.getElementById('game-detail-description');
+        const gameDetailCreatedDate = document.getElementById('game-detail-created-date');
+        const gameDetailThumbnail = document.getElementById('game-detail-thumbnail');
+        const gameDetailLikes = document.getElementById('game-detail-likes');
+        const gameDetailDislikes = document.getElementById('game-detail-dislikes');
+        const gameDetailPlaying = document.getElementById('game-detail-playing');
+        const gameDetailVisits = document.getElementById('game-detail-visits');
+        const gameDetailToolsAllowed = document.getElementById('game-detail-tools-allowed');
+
+        if (gameDetailTitle) gameDetailTitle.textContent = currentGameDetailData.title || 'Untitled Game';
+        if (gameDetailCreator) gameDetailCreator.textContent = currentGameDetailData.creator_id || 'Unknown';
+        if (gameDetailDescription) gameDetailDescription.textContent = currentGameDetailData.description || 'No description available.';
 
         // Format and display creation date
         const createdDate = currentGameDetailData.createdAt || currentGameDetailData.timestamp;
-        if (createdDate) {
+        const currentLang = localStorage.getItem('rogold_language') || 'pt';
+        const dateLocale = currentLang === 'en' ? 'en-US' : currentLang === 'es' ? 'es-ES' : 'pt-BR';
+        
+        if (createdDate && gameDetailCreatedDate) {
             const date = new Date(createdDate);
-            const formattedDate = date.toLocaleDateString('pt-BR', {
+            const formattedDate = date.toLocaleDateString(dateLocale, {
                 year: 'numeric',
                 month: 'long',
                 day: 'numeric'
             });
-            document.getElementById('game-detail-created-date').textContent = formattedDate;
-        } else {
-            document.getElementById('game-detail-created-date').textContent = 'Unknown';
+            gameDetailCreatedDate.textContent = formattedDate;
+        } else if (gameDetailCreatedDate) {
+            gameDetailCreatedDate.textContent = 'Unknown';
         }
 
-        document.getElementById('game-detail-thumbnail').src = currentGameDetailData.thumbnail || 'imgs/thumbnail1.jpg';
-        document.getElementById('game-detail-likes').textContent = currentGameDetailData.likes || 0;
-        document.getElementById('game-detail-dislikes').textContent = currentGameDetailData.dislikes || 0;
-        document.getElementById('game-detail-playing').textContent = currentGameDetailData.playing || 0;
-        document.getElementById('game-detail-visits').textContent = currentGameDetailData.visits || 0;
+        if (gameDetailThumbnail) gameDetailThumbnail.src = currentGameDetailData.thumbnail || 'imgs/thumbnail1.jpg';
+        if (gameDetailLikes) gameDetailLikes.textContent = currentGameDetailData.likes || 0;
+        if (gameDetailDislikes) gameDetailDislikes.textContent = currentGameDetailData.dislikes || 0;
+        if (gameDetailPlaying) gameDetailPlaying.textContent = currentGameDetailData.playing || 0;
+        if (gameDetailVisits) gameDetailVisits.textContent = currentGameDetailData.visits || 0;
 
         // Increment visits
         fetch(`/api/games/${encodeURIComponent(currentGameDetailId)}/visit`, {
@@ -2297,8 +2433,9 @@ async function loadGameDetailSection() {
         });
 
         // Display tools allowed status
-        const toolsAllowed = currentGameDetailData.toolsAllowed === true ? 'Sim' : 'Não';
-        document.getElementById('game-detail-tools-allowed').textContent = toolsAllowed;
+        const t = (typeof translations !== 'undefined' && translations[currentLang]) || translations.pt;
+        const toolsAllowedText = currentGameDetailData.toolsAllowed === true ? (t['tools-yes'] || 'Sim') : (t['tools-no'] || 'Não');
+        if (gameDetailToolsAllowed) gameDetailToolsAllowed.textContent = toolsAllowedText;
 
         // Check user rating
         currentGameDetailRating = localStorage.getItem(`rating_${currentGameDetailId}`);
@@ -2306,7 +2443,8 @@ async function loadGameDetailSection() {
 
     } catch (error) {
         console.error('Error loading game details:', error);
-        document.getElementById('game-detail-title').textContent = 'Error loading game';
+        const gameDetailTitle = document.getElementById('game-detail-title');
+        if (gameDetailTitle) gameDetailTitle.textContent = 'Error loading game';
     }
 }
 
@@ -2314,12 +2452,12 @@ function updateGameDetailRatingButtons() {
     const likeBtn = document.getElementById('game-detail-like-btn');
     const dislikeBtn = document.getElementById('game-detail-dislike-btn');
 
-    likeBtn.classList.remove('active');
-    dislikeBtn.classList.remove('active');
+    if (likeBtn) likeBtn.classList.remove('active');
+    if (dislikeBtn) dislikeBtn.classList.remove('active');
 
-    if (currentGameDetailRating === 'like') {
+    if (currentGameDetailRating === 'like' && likeBtn) {
         likeBtn.classList.add('active');
-    } else if (currentGameDetailRating === 'dislike') {
+    } else if (currentGameDetailRating === 'dislike' && dislikeBtn) {
         dislikeBtn.classList.add('active');
     }
 }
@@ -2513,7 +2651,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const item = catalogManager.getItemById(itemId);
 
         if (!item) {
-            await alert('Erro: Item não encontrado no catálogo.');
+            await alert(t['warning-item-not-found']);
             return;
         }
 
@@ -2601,7 +2739,7 @@ document.addEventListener('DOMContentLoaded', function() {
             e.stopPropagation();
             const currentUser = userManager.getCurrentUser();
             if (!currentUser) {
-                await alert('Espere um pouco aí! Primeiro logue para conseguir jogar.');
+                await alert(t['warning-login-play']);
                 return;
             }
 
@@ -2616,7 +2754,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else if (gameTitle === 'Work at a Pizza Place') {
                     window.location.href = `game.html?game=work_at_pizza_place`;
                 } else {
-                    await alert("Não foi possível iniciar o jogo: ID do jogo não encontrado.");
+                    await alert(t['warning-game-id-not-found']);
                 }
             }
         }
@@ -2626,7 +2764,7 @@ document.addEventListener('DOMContentLoaded', function() {
             e.stopPropagation();
             const currentUser = userManager.getCurrentUser();
             if (!currentUser) {
-                await alert('Você precisa estar logado para favoritar jogos.');
+                await alert(t['warning-login-favorite']);
                 return;
             }
 
@@ -2637,7 +2775,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const safeGameTitle = typeof gameTitle === 'string' ? gameTitle.trim() : '';
 
             if (safeGameTitle === '') {
-                await alert("Não foi possível identificar o jogo. O título está vazio.");
+                await alert(t['warning-game-title-empty']);
                 console.error("Game title is empty after parsing dataset and trimming.", e.target);
                 return;
             }
@@ -2672,7 +2810,7 @@ document.addEventListener('DOMContentLoaded', function() {
             e.preventDefault();
             const currentUser = userManager.getCurrentUser();
             if (!currentUser) {
-                await alert('Você precisa estar logado para avaliar jogos.');
+                await alert(t['warning-login-rate']);
                 return;
             }
             const gameId = e.target.dataset.gameId || currentGameDetailId;
@@ -2901,7 +3039,7 @@ document.getElementById('blog-create-form')?.addEventListener('submit', async fu
     const currentUser = userManager.getCurrentUser();
     
     if (!currentUser) {
-        await alert('Você precisa estar logado para criar um tópico.');
+        await alert(t['warning-login-create-topic']);
         return;
     }
     
@@ -2920,7 +3058,7 @@ document.getElementById('message-form')?.addEventListener('submit', async functi
     const currentUser = userManager.getCurrentUser();
     
     if (!currentUser) {
-        await alert('Você precisa estar logado para responder.');
+        await alert(t['warning-login-reply-topic']);
         return;
     }
     
@@ -3015,7 +3153,7 @@ function escapeHtml(text) {
 function showCreateBlogForm() {
     const currentUser = userManager.getCurrentUser();
     if (!currentUser) {
-        alert('Você precisa estar logado para criar um tópico.');
+        alert(t['warning-login-create-topic']);
         return;
     }
     hideSection(document.getElementById('blog-list')); 
@@ -3036,7 +3174,7 @@ function showCreationBoard() {
     const currentUser = userManager.getCurrentUser();
 
     if (!currentUser) {
-        alert('Você precisa estar logado para acessar o estúdio de criação.');
+        alert(t['warning-login-create-studio']);
         openLoginModal();
         return;
     }
@@ -3071,6 +3209,13 @@ function loadUserCreationGames() {
     const currentUser = userManager.getCurrentUser();
     const gamesGrid = document.getElementById('creation-games-grid');
 
+    // Get translations
+    const t = (typeof translations !== 'undefined' && translations[localStorage.getItem('rogold_language') || 'pt']) || {
+        'edit': 'Editar',
+        'test': 'Testar',
+        'delete': 'Excluir'
+    };
+
     console.log('loadUserCreationGames called, currentUser:', currentUser);
 
     if (!currentUser) {
@@ -3095,7 +3240,7 @@ function loadUserCreationGames() {
             const userGames = publishedGames;
 
             if (userGames.length === 0) {
-                gamesGrid.innerHTML = '<p class="empty-message">Nenhum jogo criado ainda. Clique em "Criar Novo Jogo" para começar!</p>';
+                gamesGrid.innerHTML = `<p class="empty-message">${t['no-games-yet'] || 'Nenhum jogo criado ainda. Clique em "Criar Novo Jogo" para começar!'}</p>`;
             } else {
                 gamesGrid.innerHTML = userGames.map(game => {
                     const safeGameTitle = typeof game.title === 'string' ? game.title : 'Untitled Game';
@@ -3113,9 +3258,9 @@ function loadUserCreationGames() {
                             </div>
                             <h4>${escapeHtml(safeGameTitle)}</h4>
                             <div class="creation-game-actions">
-                                <button class="primary-button" onclick="editGame('${escapeHtml(safeGameId)}')">Editar</button>
-                                <button class="secondary-button" onclick="testGame('${escapeHtml(safeGameId)}')">Testar</button>
-                                <button class="danger-button" onclick="deleteGame('${escapeHtml(safeGameId)}')">Excluir</button>
+                                <button class="primary-button" onclick="editGame('${escapeHtml(safeGameId)}')">${t['edit'] || 'Editar'}</button>
+                                <button class="secondary-button" onclick="testGame('${escapeHtml(safeGameId)}')">${t['test'] || 'Testar'}</button>
+                                <button class="danger-button" onclick="deleteGame('${escapeHtml(safeGameId)}')">${t['delete'] || 'Excluir'}</button>
                             </div>
                         </div>
                     `;
@@ -3141,7 +3286,7 @@ function testGame(gameId) {
 }
 
 async function deleteGame(gameId) {
-    const confirmDelete = await confirm('Tem certeza que deseja excluir este jogo? Esta ação não pode ser desfeita.');
+    const confirmDelete = await confirm(tGet('confirm-delete'));
     if (confirmDelete) {
         try {
             const response = await fetch(`/api/games/${encodeURIComponent(gameId)}`, {
@@ -3150,16 +3295,16 @@ async function deleteGame(gameId) {
 
             if (response.ok) {
                 const result = await response.json();
-                await alert('Jogo excluído com sucesso!');
+                await alert(t['warning-game-deleted']);
                 // Reload the games list
                 loadUserCreationGames();
             } else {
                 const error = await response.json();
-                await alert(`Erro ao excluir jogo: ${error.error || 'Erro desconhecido'}`);
+                await alert(t['warning-game-delete-error'].replace('${error}', error.error || 'Erro desconhecido'));
             }
         } catch (error) {
             console.error('Error deleting game:', error);
-            await alert('Erro ao excluir jogo. Tente novamente.');
+            await alert(t['warning-game-delete-error-generic']);
         }
     }
 }
@@ -3252,6 +3397,74 @@ function stopCoinRewardTimer() {
 // Socket.io integration (example)
 // This is just a basic example, the actual implementation may vary based on the server setup and requirements
 // const socket = io(); // Assuming io is available globally - commented out to avoid ReferenceError
+
+// Initialize language handler
+setupLanguageHandler();
+
+// ============================================
+// Custom Modal Dialog Functions (for translated buttons)
+// ============================================
+
+// Show a custom confirm dialog with translated buttons
+function showConfirm(message, title = null) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('rogold-modal');
+        const modalTitle = document.getElementById('rogold-modal-title');
+        const modalBody = document.getElementById('rogold-modal-body');
+        const modalFooter = document.getElementById('rogold-modal-footer');
+        
+        // Get translated buttons and title
+        const yesText = tGet('yes', 'Sim');
+        const noText = tGet('no', 'Não');
+        const confirmTitle = title || tGet('confirm-title', 'Confirmação');
+        
+        modalTitle.textContent = confirmTitle;
+        modalBody.textContent = message;
+        modalFooter.innerHTML = `
+            <button class="modal-button modal-button-yes" id="rogold-modal-yes">${yesText}</button>
+            <button class="modal-button modal-button-no" id="rogold-modal-no">${noText}</button>
+        `;
+        
+        modal.classList.remove('hidden');
+        
+        document.getElementById('rogold-modal-yes').onclick = () => {
+            modal.classList.add('hidden');
+            resolve(true);
+        };
+        
+        document.getElementById('rogold-modal-no').onclick = () => {
+            modal.classList.add('hidden');
+            resolve(false);
+        };
+    });
+}
+
+// Show a custom alert dialog with translated OK button
+function showAlert(message, title = null) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('rogold-modal');
+        const modalTitle = document.getElementById('rogold-modal-title');
+        const modalBody = document.getElementById('rogold-modal-body');
+        const modalFooter = document.getElementById('rogold-modal-footer');
+        
+        // Get translated button and title
+        const okText = tGet('ok', 'OK');
+        const alertTitle = title || tGet('alert-title', 'Alerta');
+        
+        modalTitle.textContent = alertTitle;
+        modalBody.textContent = message;
+        modalFooter.innerHTML = `
+            <button class="modal-button modal-button-ok" id="rogold-modal-ok">${okText}</button>
+        `;
+        
+        modal.classList.remove('hidden');
+        
+        document.getElementById('rogold-modal-ok').onclick = () => {
+            modal.classList.add('hidden');
+            resolve();
+        };
+    });
+}
 
 // socket.on('connect', () => {
 //     console.log('Connected to server via Socket.io');

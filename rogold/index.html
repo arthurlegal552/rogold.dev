@@ -6,6 +6,8 @@
     <title>Rogold - O mundo dos jogos!</title>
     <link rel="icon" href="imgs/logo.png" type="image/png">
     <link rel="stylesheet" href="stylefront.css">
+    <link rel="stylesheet" href="modal-styles.css">
+    <script src="translations.js"></script>
     <script type="importmap">
         {
             "imports": {
@@ -27,163 +29,102 @@
                     <li><a href="#" id="catalog-link">Catálogo</a></li>
                     <li><a href="#" id="studio-link">Studio</a></li>
                     <li><a href="#" id="profile-link">Perfil</a></li>
-                    <li><a href="#" id="community-link">Comunidade</a></li>
+                    <li><a href="#" id="credits-link">Créditos</a></li>
                 </ul>
             </nav>
+            <div class="language-selector">
+                <select id="language-select">
+                    <option value="pt">🇧🇷 PT</option>
+                    <option value="en">🇺🇸 EN</option>
+                    <option value="es">🇪🇸 ES</option>
+                </select>
+            </div>
         </header>
 
         <main>
             <div class="banner">
-                <h2>Bem-vindo ao Rogold - O mundo dos jogos!</h2>
-                <p>Junte-se a milhões de jogadores e explore jogos incríveis feitos pela comunidade.</p>
-                <div class="alpha-banner">ALPHA RELEASE - Obrigado pelo apoio!</div>
+                <h2 data-translate="banner-title">Bem-vindo ao Rogold - O mundo dos jogos!</h2>
+                <p data-translate="banner-description">Junte-se a milhões de jogadores e explore jogos incríveis feitos pela comunidade.</p>
+                <div class="alpha-banner" data-translate="alpha-banner">ALPHA RELEASE - Obrigado pelo apoio!</div>
             </div>
 
             <!-- Profile Section -->
             <section id="profile-section" class="hidden">
                 <div class="profile-header">
-                    <button class="back-button" onclick="hideProfile()">← Voltar</button>
+                    <button class="back-button" onclick="hideProfile()" data-translate="back">← Voltar</button>
                     <div class="profile-avatar">
-                        <img id="profile-avatar-img" src="" alt="Avatar do Usuário" class="hidden">
+                        <img id="profile-avatar-img" src="" alt="" class="hidden">
                         <div id="avatar-placeholder" class="avatar-placeholder">
                             <span>?</span>
                         </div>
                     </div>
                     <div class="profile-info">
                         <h2 id="profile-username">Usuário</h2>
-                        <p class="profile-status">Status: Offline</p>
-                        <p class="profile-join-date">Membro desde: <span id="join-date">--/--/----</span></p>
+                        <p class="profile-status" data-translate="status-offline">Status: Offline</p>
+                        <p><span data-translate="member-since">Membro desde:</span> <span id="join-date">--/--/----</span></p>
                     </div>
                     <div class="profile-stats">
                         <div class="stat-item">
-                            <span class="stat-number">0</span>
-                            <span class="stat-label">Amigos</span>
-                        </div>
-                        <div class="stat-item">
                             <span id="favorite-count" class="stat-number">0</span>
-                            <span class="stat-label">Favoritos</span>
+                            <span class="stat-label" data-translate="favorites">Favoritos</span>
                         </div>
                         <div class="stat-item">
                             <span id="profile-visits" class="stat-number">0</span>
-                            <span class="stat-label">Visitas</span>
+                            <span class="stat-label" data-translate="visits">Visitas</span>
                         </div>
-                        <!-- NEW: Coins display in profile -->
                         <div class="stat-item">
                             <span id="user-coins" class="stat-number coins-value">0</span>
-                            <span class="stat-label">GoldBucks</span>
+                            <span class="stat-label" data-translate="coins-label">GoldBucks</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="profile-content">
                     <div class="profile-tabs">
-                        <button class="tab-button active" data-tab="about">Sobre</button>
-                        <button class="tab-button" data-tab="games">Meus Jogos</button>
-                        <button class="tab-button" data-tab="favorites">Favoritos</button>
-                        <button class="tab-button" data-tab="messages">Mensagens</button>
+                        <button class="tab-button active" data-tab="about" data-translate="tab-about">Sobre</button>
+                        <button class="tab-button" data-tab="games" data-translate="tab-my-games">Meus Jogos</button>
+                        <button class="tab-button" data-tab="favorites" data-translate="tab-favorites">Favoritos</button>
+                        <button class="tab-button" data-tab="messages" data-translate="tab-messages">Mensagens</button>
                     </div>
 
                     <div class="tab-content">
                         <div id="about-tab" class="tab-panel active">
-                            <h3>Sobre Mim</h3>
+                            <h3 data-translate="about-me">Sobre Mim</h3>
                             <div class="about-content">
                                 <p id="profile-bio">Este usuário ainda não escreveu uma descrição.</p>
-                                <button class="edit-button" onclick="editProfile()">Editar Perfil</button>
+                                <button class="edit-button" onclick="editProfile()" data-translate="edit-profile">Editar Perfil</button>
                             </div>
                         </div>
 
                         <div id="games-tab" class="tab-panel">
-                            <h3>Meus Jogos</h3>
+                            <h3 data-translate="tab-my-games">Meus Jogos</h3>
                             <div class="games-grid" id="user-games">
-                                <p class="empty-message">Nenhum jogo criado ainda.</p>
+                                <p class="empty-message" data-translate="no-games-created">Nenhum jogo criado ainda.</p>
                             </div>
                         </div>
 
                         <div id="favorites-tab" class="tab-panel">
-                            <h3>Meus Jogos Favoritos</h3>
+                            <h3 data-translate="no-favorites-yet">Meus Jogos Favoritos</h3>
                             <div class="games-grid" id="favorite-games-list">
-                                <p class="empty-message">Nenhum jogo favorito ainda.</p>
+                                <p class="empty-message" data-translate="no-favorites-yet">Nenhum jogo favorito ainda.</p>
                             </div>
                         </div>
 
                         <div id="messages-tab" class="tab-panel">
-                            <h3>Mensagens</h3>
+                            <h3 data-translate="tab-messages">Mensagens</h3>
                             <div class="messages-list" id="messages-container">
-                                <p class="empty-message">Nenhuma mensagem nova.</p>
+                                <p class="empty-message" data-translate="no-messages">Nenhuma mensagem nova.</p>
                             </div>
                         </div>
                     </div>
                 </div>
             </section>
-
-
-            <!-- Add Community Section -->
-            <section id="community-section" class="hidden">
-                <div class="community-header">
-                    <button class="primary-button" onclick="showCreateBlogForm()">Criar Novo Tópico</button>
-                </div>
-
-                <div id="create-blog-form" class="auth-section hidden">
-                    <div class="auth-container">
-                        <h3>Criar Novo Tópico</h3>
-                        <form id="blog-create-form">
-                            <div class="form-group">
-                                <label>Título do Tópico:</label>
-                                <input type="text" id="blog-title" required maxlength="100">
-                            </div>
-                            <div class="form-group">
-                                <label>Mensagem Inicial:</label>
-                                <textarea id="blog-message" required maxlength="1000" rows="4"></textarea>
-                            </div>
-                            <div class="form-actions">
-                                <button type="submit" class="primary-button">Criar Tópico</button>
-                                <button type="button" class="secondary-button" onclick="hideCreateBlogForm()">Cancelar</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <div id="blog-list">
-                    <h3>Todos os Tópicos da Comunidade</h3>
-                    <div id="blogs-container">
-                        <p class="empty-message">Nenhum tópico criado ainda. Seja o primeiro!</p>
-                    </div>
-                </div>
-
-                <!-- Blog Detail View -->
-                <div id="blog-detail" class="hidden">
-                    <div class="blog-header">
-                        <button class="back-button" onclick="hideBlogDetail()">← Voltar aos Tópicos</button>
-                        <h3 id="blog-detail-title"></h3>
-                        <p class="blog-meta">Criado por <span id="blog-author"></span> em <span id="blog-date"></span></p>
-                    </div>
-
-                    <div class="blog-messages">
-                        <div id="blog-messages-container"></div>
-                    </div>
-
-                    <div class="auth-section">
-                        <div class="auth-container">
-                            <h4>Adicionar Resposta</h4>
-                            <form id="message-form">
-                                <div class="form-group">
-                                    <textarea id="reply-message" required maxlength="500" rows="3" placeholder="Digite sua mensagem..."></textarea>
-                                </div>
-                                <div class="form-actions">
-                                    <button type="submit" class="primary-button">Enviar</button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
 
             <!-- Catalog Section -->
             <section id="catalog-section" class="hidden">
                 <div class="catalog-header">
-                    <button class="back-button" onclick="hideCatalog()">← Voltar</button>
-                    <h2>Catálogo Rogold</h2>
+                    <button class="back-button" onclick="hideCatalog()" data-translate="catalog-back">← Voltar</button>
+                    <h2 data-translate="catalog-title">Catálogo Rogold</h2>
                     <div class="user-roblox-account-info">
                         <img src="imgs/roglux_coins.png" alt="Coins" class="coins-icon">
                         <span id="current-catalog-coins">0</span>
@@ -193,10 +134,10 @@
                 <div class="catalog-content">
                     <div class="catalog-items">
                         <div class="catalog-categories">
-                            <button class="category-button active" data-category="all">Todos</button>
-                            <button class="category-button" data-category="hat">Chapéus</button>
-                            <button class="category-button" data-category="face">Rostos</button>
-                            <button class="category-button" data-category="gear">Ferramentas</button>
+                            <button class="category-button active" data-category="all" data-translate="all-items">Todos</button>
+                            <button class="category-button" data-category="hat" data-translate="hats">Chapéus</button>
+                            <button class="category-button" data-category="face" data-translate="faces">Rostos</button>
+                            <button class="category-button" data-category="gear" data-translate="gears">Ferramentas</button>
                         </div>
                         <div class="items-grid" id="catalog-items-grid">
                             <!-- Items will be rendered here by JavaScript -->
@@ -208,7 +149,7 @@
             <!-- Item Detail Section -->
             <section id="item-detail-section" class="hidden">
                 <div class="item-detail-header">
-                    <button class="back-button" onclick="hideItemDetail()">← Voltar ao Catálogo</button>
+                    <button class="back-button" onclick="hideItemDetail()" data-translate="catalog-back">← Voltar ao Catálogo</button>
                     <h2 id="item-detail-title"></h2>
                 </div>
 
@@ -221,11 +162,11 @@
                         <div class="item-stats">
                             <div class="stat-item">
                                 <span class="stat-number" id="item-purchase-count">0</span>
-                                <span class="stat-label">Compras</span>
+                                <span class="stat-label" data-translate="purchases">Compras</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-number" id="item-detail-price">0</span>
-                                <span class="stat-label">GoldBucks</span>
+                                <span class="stat-label" data-translate="price">GoldBucks</span>
                             </div>
                         </div>
                         <div class="item-detail-actions" id="item-detail-actions">
@@ -236,10 +177,10 @@
             </section>
 
             <section class="featured-games" id="featured-games">
-                 <h3>Jogos em Destaque</h3>
+                 <h3 data-translate="featured-games">Jogos em Destaque</h3>
                  <div class="games-categories">
-                     <button class="category-button active" data-category="all">Todos</button>
-                     <button class="category-button" data-category="most-liked">Mais Curtidos</button>
+                     <button class="category-button active" data-category="all" data-translate="all">Todos</button>
+                     <button class="category-button" data-category="most-liked" data-translate="most-liked">Mais Curtidos</button>
                  </div>
                  <div class="games-grid" id="games-grid">
                     <!-- Published games will be added here dynamically -->
@@ -249,8 +190,8 @@
             <!-- Game Detail Section -->
             <section id="game-detail-section" class="hidden">
                 <div class="game-detail-header">
-                    <button class="back-button" onclick="hideGameDetail()">← Voltar aos Jogos</button>
-                    <h2 id="game-detail-title">Detalhes do Jogo</h2>
+                    <button class="back-button" onclick="hideGameDetail()" data-translate="game-back">← Voltar aos Jogos</button>
+                    <h2 id="game-detail-title" data-translate="game-details">Detalhes do Jogo</h2>
                 </div>
 
                 <div class="game-detail-content">
@@ -258,31 +199,31 @@
                         <img id="game-detail-thumbnail" src="" alt="Game Thumbnail">
                     </div>
                     <div class="game-detail-info">
-                        <div class="game-description" id="game-detail-description">No description available.</div>
-                        <div class="game-creator">Criado por: <span id="game-detail-creator">Unknown</span></div>
-                        <div class="game-created-date">Criado em: <span id="game-detail-created-date">Unknown</span></div>
-                        <div class="game-tools-allowed">Ferramentas permitidas: <span id="game-detail-tools-allowed">Sim</span></div>
+                        <div class="game-description" id="game-detail-description" data-translate="no-description">No description available.</div>
+                        <div><span data-translate="created-by-label">Criado por:</span> <span id="game-detail-creator">Unknown</span></div>
+                        <div><span data-translate="created-date-label">Criado em:</span> <span id="game-detail-created-date">Unknown</span></div>
+                        <div><span data-translate="tools-allowed">Ferramentas permitidas:</span> <span id="game-detail-tools-allowed">Sim</span></div>
                         <div class="game-detail-actions">
-                            <button class="like-button" id="game-detail-like-btn">Like</button>
-                            <button class="dislike-button" id="game-detail-dislike-btn">Dislike</button>
-                            <button class="play-button" id="game-detail-play-btn">Jogar Agora</button>
+                            <button class="like-button" id="game-detail-like-btn" data-translate="like">Like</button>
+                            <button class="dislike-button" id="game-detail-dislike-btn" data-translate="dislike">Dislike</button>
+                            <button class="play-button" id="game-detail-play-btn" data-translate="play-now">Jogar Agora</button>
                         </div>
                         <div class="game-stats">
                             <div class="stat-item">
                                 <span class="stat-number" id="game-detail-likes">0</span>
-                                <span class="stat-label">Curtidas</span>
+                                <span class="stat-label" data-translate="likes">Curtidas</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-number" id="game-detail-dislikes">0</span>
-                                <span class="stat-label">Não Curtidas</span>
+                                <span class="stat-label" data-translate="dislikes">Não Curtidas</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-number" id="game-detail-playing">0</span>
-                                <span class="stat-label">Jogando</span>
+                                <span class="stat-label" data-translate="playing">Jogando</span>
                             </div>
                             <div class="stat-item">
                                 <span class="stat-number" id="game-detail-visits">0</span>
-                                <span class="stat-label">Visitas</span>
+                                <span class="stat-label" data-translate="visits">Visitas</span>
                             </div>
                         </div>
                     </div>
@@ -292,14 +233,14 @@
             <!-- Creation Board Section -->
             <section id="creation-board-section" class="hidden">
                 <div class="creation-board-header">
-                    <button class="back-button" onclick="hideCreationBoard()">← Voltar</button>
-                    <h2>Meu Estúdio de Criação</h2>
-                    <button class="primary-button" onclick="createNewGame()">Criar Novo Jogo</button>
+                    <button class="back-button" onclick="hideCreationBoard()" data-translate="back">← Voltar</button>
+                    <h2 data-translate="my-creation-studio">Meu Estúdio de Criação</h2>
+                    <button class="primary-button" onclick="createNewGame()" data-translate="create-new-game">Criar Novo Jogo</button>
                 </div>
 
                 <div class="creation-board-content">
                     <div class="creation-games-grid" id="creation-games-grid">
-                        <p class="empty-message">Nenhum jogo criado ainda. Clique em "Criar Novo Jogo" para começar!</p>
+                        <p class="empty-message" data-translate="no-games-yet">Nenhum jogo criado ainda. Clique em "Criar Novo Jogo" para começar!</p>
                     </div>
                 </div>
             </section>
@@ -307,19 +248,19 @@
             <!-- Remove modals and replace with inline forms -->
             <section id="login-section" class="auth-section hidden">
                 <div class="auth-container">
-                    <h3>Entre na sua conta Rogold</h3>
+                    <h3 data-translate="login-title">Entre na sua conta Rogold</h3>
                     <form id="login-form-inline">
                         <div class="form-group">
-                            <label>Usuário:</label>
+                            <label data-translate="username-label">Usuário:</label>
                             <input type="text" id="username-inline" required>
                         </div>
                         <div class="form-group">
-                            <label>Senha:</label>
+                            <label data-translate="password-label">Senha:</label>
                             <input type="password" id="password-inline" required>
                         </div>
                         <div class="form-actions">
-                            <button type="submit" class="primary-button">Entrar</button>
-                            <button type="button" id="switch-to-register-inline" class="secondary-button">Criar Conta</button>
+                            <button type="submit" class="primary-button" data-translate="login-button">Entrar</button>
+                            <button type="button" id="switch-to-register-inline" class="secondary-button" data-translate="create-account">Criar Conta</button>
                         </div>
                     </form>
                 </div>
@@ -327,23 +268,23 @@
 
             <section id="register-section" class="auth-section hidden">
                 <div class="auth-container">
-                    <h3>Criar conta Rogold</h3>
+                    <h3 data-translate="register-title">Criar conta Rogold</h3>
                     <form id="register-form-inline">
                         <div class="form-group">
-                            <label>Usuário:</label>
+                            <label data-translate="username-label">Usuário:</label>
                             <input type="text" id="reg-username-inline" required>
                         </div>
                         <div class="form-group">
-                            <label>Senha:</label>
+                            <label data-translate="password-label">Senha:</label>
                             <input type="password" id="reg-password-inline" required>
                         </div>
                         <div class="form-group">
-                            <label>Confirmar Senha:</label>
+                            <label data-translate="confirm-password">Confirmar Senha:</label>
                             <input type="password" id="reg-confirm-password-inline" required>
                         </div>
                         <div class="form-actions">
-                            <button type="submit" class="primary-button">Criar Conta</button>
-                            <button type="button" id="switch-to-login-inline" class="secondary-button">Já tenho conta</button>
+                            <button type="submit" class="primary-button" data-translate="create-account">Criar Conta</button>
+                            <button type="button" id="switch-to-login-inline" class="secondary-button" data-translate="already-have-account">Já tenho conta</button>
                         </div>
                     </form>
                 </div>
@@ -351,31 +292,31 @@
 
             <section id="settings-section" class="auth-section hidden">
                 <div class="auth-container">
-                    <h3>Configurações da Conta</h3>
+                    <h3 data-translate="settings-title">Configurações da Conta</h3>
                     <form id="settings-form-inline">
                         <div class="form-group">
-                            <label>Usuário Atual:</label>
+                            <label data-translate="current-username">Usuário Atual:</label>
                             <input type="text" id="current-username-inline" readonly>
                         </div>
                         <div class="form-group">
-                            <label>Novo Usuário:</label>
-                            <input type="text" id="new-username-inline" placeholder="Deixe vazio para manter atual">
+                            <label data-translate="new-username">Novo Usuário:</label>
+                            <input type="text" id="new-username-inline" data-translate-placeholder="leave-blank-keep" placeholder="Deixe vazio para manter atual">
                         </div>
                         <div class="form-group">
-                            <label>Senha Atual:</label>
+                            <label data-translate="current-password">Senha Atual:</label>
                             <input type="password" id="current-password-inline" required>
                         </div>
                         <div class="form-group">
-                            <label>Nova Senha:</label>
-                            <input type="password" id="new-password-inline" placeholder="Deixe vazio para manter atual">
+                            <label data-translate="new-password">Nova Senha:</label>
+                            <input type="password" id="new-password-inline" data-translate-placeholder="leave-blank-keep" placeholder="Deixe vazio para manter atual">
                         </div>
                         <div class="form-group">
-                            <label>Confirmar Nova Senha:</label>
-                            <input type="password" id="confirm-new-password-inline" placeholder="Deixe vazio para manter atual">
+                            <label data-translate="confirm-new-password">Confirmar Nova Senha:</label>
+                            <input type="password" id="confirm-new-password-inline" data-translate-placeholder="leave-blank-keep" placeholder="Deixe vazio para manter atual">
                         </div>
                         <div class="form-actions">
-                            <button type="submit" class="primary-button">Salvar Alterações</button>
-                            <button type="button" id="close-settings-inline" class="secondary-button">Cancelar</button>
+                            <button type="submit" class="primary-button" data-translate="save-changes">Salvar Alterações</button>
+                            <button type="button" id="close-settings-inline" class="secondary-button" data-translate="cancel">Cancelar</button>
                         </div>
                     </form>
                 </div>
@@ -383,32 +324,49 @@
 
             <section id="profile-edit-section" class="auth-section hidden">
                 <div class="auth-container">
-                    <h3>Editar Perfil</h3>
+                    <h3 data-translate="edit-profile-title">Editar Perfil</h3>
                     <form id="profile-edit-form-inline">
                         <div class="form-group">
-                            <label>Biografia:</label>
-                            <textarea id="bio-input-inline" maxlength="500" rows="4" placeholder="Fale sobre você..."></textarea>
+                            <label data-translate="bio-label">Biografia:</label>
+                            <textarea id="bio-input-inline" maxlength="500" rows="4" data-translate-placeholder="bio-placeholder" placeholder="Fale sobre você..."></textarea>
                         </div>
                         <div class="form-group">
-                            <label>Status:</label>
+                            <label data-translate="status-label">Status:</label>
                             <select id="status-input-inline">
-                                <option value="Online">Online</option>
-                                <option value="Offline">Offline</option>
-                                <option value="Ocupado">Ocupado</option>
+                                <option value="Online" data-translate="status-online">Online</option>
+                                <option value="Offline" data-translate="status-offline">Offline</option>
+                                <option value="Ocupado" data-translate="status-busy">Ocupado</option>
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>Foto de Perfil:</label>
+                            <label data-translate="profile-picture">Foto de Perfil:</label>
                             <input type="file" id="profile-picture-input" accept="image/*">
-                            <button type="button" id="remove-profile-picture" class="secondary-button" style="margin-top: 10px;">Remover Foto</button>
+                            <button type="button" id="remove-profile-picture" class="secondary-button" style="margin-top: 10px;" data-translate="remove-picture">Remover Foto</button>
                         </div>
                         <div class="form-actions">
-                            <button type="submit" class="primary-button">Salvar</button>
-                            <button type="button" id="close-profile-edit-inline" class="secondary-button">Cancelar</button>
+                            <button type="submit" class="primary-button" data-translate="save">Salvar</button>
+                            <button type="button" id="close-profile-edit-inline" class="secondary-button" data-translate="cancel">Cancelar</button>
                         </div>
                     </form>
                     <div class="form-actions" style="margin-top: 20px; border-top: 1px dashed #808080; padding-top: 15px;">
-                        <button type="button" id="logout-button" class="secondary-button danger">Sair da Conta</button>
+                        <button type="button" id="logout-button" class="secondary-button danger" data-translate="logout">Sair da Conta</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Credits Section -->
+            <section id="credits-section" class="hidden">
+                <div class="credits-container">
+                    <h2 data-translate="credits-title">Créditos</h2>
+                    <div class="credits-list">
+                        <div class="credit-item">
+                            <h3>Main Developer</h3>
+                            <p><a href="https://websim.com/@notrealcgi" target="_blank">notrealcgi</a> / <a href="https://github.com/arthurlegal552" target="_blank">arthurlegal552</a></p>
+                        </div>
+                        <div class="credit-item">
+                            <h3>Graphic Designer</h3>
+                            <p><a href="https://websim.com/@styron" target="_blank">styron</a> <span style="color: #808080; font-size: 12px;">go follow him hes a cool guy!</span></p>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -416,12 +374,27 @@
 
         <footer>
             <div class="footer-links">
-                <a href="#">Ajuda</a>
-                <a href="#">Termos de Uso</a>
-                <a href="#">Contato</a>
+                <a href="#" data-translate="help">Ajuda</a>
+                <a href="#" data-translate="terms">Termos de Uso</a>
+                <a href="#" data-translate="contact">Contato</a>
             </div>
-            <p>&copy; 2006 Rogold. Todos os direitos reservados.</p>
+            <p data-translate="copyright">&copy; 2006 Rogold. Todos os direitos reservados.</p>
         </footer>
+    </div>
+
+    <!-- Custom Modal for Translated Dialogs -->
+    <div id="rogold-modal" class="modal-overlay hidden">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="rogold-modal-title">Rogold</h3>
+            </div>
+            <div class="modal-body" id="rogold-modal-body">
+                <!-- Message will be inserted here -->
+            </div>
+            <div class="modal-footer" id="rogold-modal-footer">
+                <!-- Buttons will be inserted here -->
+            </div>
+        </div>
     </div>
 
     <!-- Link to external JavaScript file -->
