@@ -164,6 +164,7 @@ let speedMultiplier = 1;   // começa normal
 let isSpeeding = false;    // controle do modo admin
 let playerHealth = 100;
 const maxHealth = 100;
+let pendingDeath = false;  // Flag for pending death from scripts
 let playerNameTags = {};
 
 // Part synchronization tracking
@@ -221,6 +222,12 @@ RobloxEnvironment.Workspace = new Proxy(originalWorkspace, {
     }
 });
 
+// Expose workspace globally for Lua scripts
+window.workspace = RobloxEnvironment.Workspace;
+
+// Also expose RobloxEnvironment globally for game.Player, etc.
+window.game = RobloxEnvironment;
+
 // Roblox Instance class for game environment
 class RobloxInstance {
     constructor(className, name) {
@@ -242,10 +249,29 @@ class RobloxInstance {
         this.Transparency = 0;
         this.spinAxis = new THREE.Vector3(0, 1, 0); // Default spin axis (Y)
 
+        // Touched event support
+        const touchedCallbacks = [];
+        this.Touched = {
+            Connect: function(callback) {
+                touchedCallbacks.push(callback);
+                console.log(`[TOUCHED] Connected callback to ${name}, total callbacks: ${touchedCallbacks.length}`);
+                return {
+                    Disconnect: function() {
+                        const index = touchedCallbacks.indexOf(callback);
+                        if (index > -1) {
+                            touchedCallbacks.splice(index, 1);
+                        }
+                    }
+                };
+            }
+        };
+        this.touchedCallbacks = touchedCallbacks;
+        console.log(`[TOUCHED DEBUG] Created Touched property for ${name}, Touched object:`, this.Touched);
+
         // Return a proxy to enable script.ChildName access
         return new Proxy(this, {
             get(target, prop) {
-                // First check if it's a regular property
+                // First check if it's a regular property (including Touched, touchedCallbacks, etc.)
                 if (prop in target) {
                     return target[prop];
                 }
@@ -256,6 +282,10 @@ class RobloxInstance {
                 }
                 // Return undefined if not found
                 return undefined;
+            },
+            set(target, prop, value) {
+                target[prop] = value;
+                return true;
             }
         });
     }
@@ -399,27 +429,61 @@ function interpretLuaScript(script) {
     const actions = [];
     const lines = script.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('--'));
 
+    console.log('[DEBUG] Parsing script:', script);
+    console.log('[DEBUG] Lines:', lines);
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        console.log('[DEBUG] Processing line:', line);
+
+        // Handle method call assignments: local var = object:method(args)
+        if (line.includes('=') && line.includes(':') && line.match(/^\s*local\s+\w+\s*=/)) {
+            console.log('[DEBUG] Checking call_method_assign pattern');
+            const match = line.match(/local\s+(\w+)\s*=\s*([.\w]+):(\w+)\(([^)]*)\)/);
+            if (match) {
+                console.log('[DEBUG] Matched call_method_assign');
+                const varName = match[1];
+                const objName = match[2];
+                const method = match[3];
+                const args = match[4];
+                actions.push({
+                    type: 'call_method_assign',
+                    varName: varName,
+                    objName: objName,
+                    method: method,
+                    args: args
+                });
+                continue;
+            }
+        }
 
         // Handle wait statements
         if (line.startsWith('wait')) {
             const match = line.match(/wait\((.*?)\)/);
-            const seconds = match ? parseFloat(match[1]) || 0.03 : 0.03;
-            actions.push({
-                type: 'wait',
-                seconds: seconds
-            });
+            const secondsExpr = match ? match[1] : '0.03';
+            // Check if it's a number literal
+            if (!isNaN(secondsExpr)) {
+                actions.push({
+                    type: 'wait',
+                    seconds: parseFloat(secondsExpr) || 0.03
+                });
+            } else {
+                actions.push({
+                    type: 'wait_variable',
+                    secondsExpr: secondsExpr.trim()
+                });
+            }
             continue;
         }
 
         // Handle for loops
         if (line.startsWith('for ')) {
-            const match = line.match(/for\s+(\w+)\s*=\s*(\d+),\s*(\d+)\s+do/);
-            if (match) {
-                const loopVar = match[1];
-                const start = parseInt(match[2]);
-                const end = parseInt(match[3]);
+            // Handle numeric for loops: for i = 1, 10 do
+            const numericMatch = line.match(/for\s+(\w+)\s*=\s*(\d+),\s*(\d+)\s+do/);
+            if (numericMatch) {
+                const loopVar = numericMatch[1];
+                const start = parseInt(numericMatch[2]);
+                const end = parseInt(numericMatch[3]);
                 const loopBody = extractLoopBody(lines, i);
                 actions.push({
                     type: 'for_loop',
@@ -430,6 +494,69 @@ function interpretLuaScript(script) {
                 });
                 // Skip the loop body lines
                 i += countLoopLines(lines, i);
+                continue;
+            }
+            
+            // Handle pairs/ipairs loops: for _, obj in pairs(table) do
+            const pairsMatch = line.match(/for\s+([^,]+),\s*(\w+)\s+in\s+pairs\((.+)\)\s+do/);
+            if (pairsMatch) {
+                const keyVar = pairsMatch[1].trim();
+                const valueVar = pairsMatch[2].trim();
+                const tableExpr = pairsMatch[3].trim();
+                const loopBody = extractLoopBody(lines, i);
+                actions.push({
+                    type: 'pairs_loop',
+                    keyVar: keyVar,
+                    valueVar: valueVar,
+                    tableExpr: tableExpr,
+                    body: loopBody
+                });
+                // Skip the loop body lines
+                i += countLoopLines(lines, i);
+                continue;
+            }
+        }
+
+        // Handle if statements
+        if (line.startsWith('if ')) {
+            const match = line.match(/if\s+(.+)\s+then/);
+            if (match) {
+                const condition = match[1];
+                const ifBody = [];
+                let elseBody = [];
+                let foundElse = false;
+                
+                // Extract if body and else body
+                for (let j = i + 1; j < lines.length; j++) {
+                    const bodyLine = lines[j].trim();
+                    if (bodyLine === 'end') {
+                        break;
+                    }
+                    if (bodyLine === 'else') {
+                        foundElse = true;
+                        continue;
+                    }
+                    if (foundElse) {
+                        elseBody.push(lines[j]);
+                    } else {
+                        ifBody.push(lines[j]);
+                    }
+                }
+                
+                actions.push({
+                    type: 'if_statement',
+                    condition: condition,
+                    ifBody: ifBody,
+                    elseBody: elseBody
+                });
+                
+                // Skip to end of if block
+                for (let j = i + 1; j < lines.length; j++) {
+                    if (lines[j].trim() === 'end') {
+                        i = j;
+                        break;
+                    }
+                }
                 continue;
             }
         }
@@ -452,21 +579,34 @@ function interpretLuaScript(script) {
         }
 
         // Handle event connections (object.Event:Connect(function))
+        console.log('[DEBUG] Checking for :Connect( pattern:', line);
         if (line.includes(':Connect(')) {
             const match = line.match(/(\w+)\.(\w+):Connect\(\s*function\s*\(\s*([^)]*)\s*\)/);
+            console.log('[DEBUG] Regex match result:', match);
             if (match) {
                 const varName = match[1];
                 const eventName = match[2];
                 const params = match[3];
+                console.log('[DEBUG] Matched connect_event:', varName, eventName, params);
+                
+                // Extract function body
+                const functionLines = extractFunctionBody(lines, i);
+                console.log('[DEBUG] Extracted functionLines:', functionLines);
+                
                 actions.push({
                     type: 'connect_event',
                     varName: varName,
                     eventName: eventName,
                     params: params,
-                    functionLines: extractFunctionBody(lines, i)
+                    functionLines: functionLines
                 });
+                console.log('[DEBUG] Created connect_event action with functionLines:', functionLines);
+                
                 // Skip the function body lines
-                i += countFunctionLines(lines, i);
+                const linesToSkip = countFunctionLines(lines, i);
+                console.log('[DEBUG] Skipping', linesToSkip, 'lines (current i=' + i + ', will be ' + (i + linesToSkip - 1) + ' then ' + (i + linesToSkip) + ' after for loop)');
+                // Account for the for loop's i++ after continue
+                i += linesToSkip - 1;
                 continue;
             }
         }
@@ -505,18 +645,94 @@ function interpretLuaScript(script) {
 
         // Handle method calls
         if (line.includes(':')) {
+            // Special handling for event connections like part.Touched:Connect(function(hit) ... end)
+            
+            // Standard method call
             const match = line.match(/([.\w]+):(\w+)\(([^)]*)\)/);
             if (match) {
                 const varName = match[1];
                 const method = match[2];
                 const args = match[3];
+                
+                // Special handling for :Connect calls that span multiple lines
+                if (method === 'Connect' && line.includes('function')) {
+                    // This is a multi-line Connect call, skip for now
+                    console.log('[DEBUG] Skipped multi-line Connect call:', line);
+                } else {
+                    actions.push({
+                        type: 'call_method',
+                        varName: varName,
+                        method: method,
+                        args: args
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // Handle :Connect calls (multi-line event connections)
+        // Pattern: part.Touched:Connect(function(hit) ... end)
+        const connectCallMatch = line.match(/([.\w]+):(\w+):(\w+)\(([^)]*)\)/);
+        if (connectCallMatch) {
+            // This pattern matches things like workspace.part_1:Touched:Connect(args)
+            // But we need to handle multi-line function bodies
+            console.log('[DEBUG] Detected Connect pattern:', connectCallMatch[0]);
+        }
+        
+        // Check for :Connect at start of line or after method (multi-line)
+        console.log('[DEBUG] Checking line for :Connect:', line);
+        if (line.includes(':Connect') && line.includes('function')) {
+            console.log('[DEBUG] Line contains :Connect and function');
+            // Extract the object and method
+            const objMethodConnect = line.match(/([.\w]+):(\w+):Connect\(function\((\w+)\)/);
+            if (objMethodConnect) {
+                console.log('[DEBUG] Regex matched!');
+                const varName = objMethodConnect[1];
+                const eventName = objMethodConnect[2];
+                const paramName = objMethodConnect[3];
+                console.log('[DEBUG] Found Connect call:', varName, eventName, paramName);
+                
+                // Collect the function body until 'end'
+                const functionBody = [];
+                // The first line has content after the function declaration
+                const firstLineAfterFunc = line.substring(line.indexOf('function(') + 'function('.length + paramName.length + 1); // +1 for closing )
+                
+                // If there's content after the ) on the first line, add it
+                if (firstLineAfterFunc.trim() && !firstLineAfterFunc.includes('end')) {
+                    functionBody.push(firstLineAfterFunc.trim());
+                }
+                
+                // Collect remaining lines until 'end'
+                for (let j = i + 1; j < lines.length; j++) {
+                    const bodyLine = lines[j];
+                    if (bodyLine.trim() === 'end') {
+                        // Found the end of the function
+                        console.log('[DEBUG] Collected function body:', functionBody);
+                        break;
+                    }
+                    functionBody.push(bodyLine.trim());
+                }
+                
                 actions.push({
-                    type: 'call_method',
+                    type: 'connect_event',
                     varName: varName,
-                    method: method,
-                    args: args
+                    eventName: eventName,
+                    paramName: paramName,
+                    functionBody: functionBody
                 });
+                console.log('[DEBUG] Created connect_event action:', {type: 'connect_event', varName, eventName, paramName, functionBody});
+                
+                // Skip the collected lines (function body + end)
+                const endLineIndex = lines.findIndex((l, idx) => idx > i && l.trim() === 'end');
+                if (endLineIndex > i) {
+                    i = endLineIndex;
+                }
                 continue;
+            } else {
+                console.log('[DEBUG] Regex did NOT match! Trying alternative patterns...');
+                // Try alternative patterns
+                const altMatch = line.match(/([.\w]+):(\w+):Connect\(([^)]*)\)/);
+                console.log('[DEBUG] Alt match result:', altMatch);
             }
         }
 
@@ -538,18 +754,64 @@ function interpretLuaScript(script) {
 
         // Handle print statements
         if (line.startsWith('print(')) {
-            // Match both single and double quotes
-            const match = line.match(/print\(['"]([^'"]+)['"]\)/);
-            if (match) {
+            // Match quoted strings first
+            const stringMatch = line.match(/print\(['"]([^'"]+)['"]\)/);
+            if (stringMatch) {
                 actions.push({
                     type: 'print',
-                    message: match[1]
+                    message: stringMatch[1]
+                });
+                continue;
+            }
+            
+            // Match variable references like print(alpha)
+            const varMatch = line.match(/print\(([^)]+)\)/);
+            if (varMatch) {
+                actions.push({
+                    type: 'print_variable',
+                    varName: varMatch[1].trim()
                 });
                 continue;
             }
         }
 
-        // Handle variable assignments (including local)
+        // Handle variable assignments (including local) - check for math functions first
+        if (line.includes('=') && line.match(/\b(math\.\w+)\s*\(/)) {
+            const match = line.match(/(?:local\s+)?(\w+)\s*=\s*(.+)/);
+            if (match) {
+                const varName = match[1];
+                const value = match[2];
+                actions.push({
+                    type: 'set_math_variable',
+                    varName: varName,
+                    value: value
+                });
+                continue;
+            }
+        }
+
+        // Handle method call assignments: local var = object:method(args)
+        if (line.includes('=') && line.includes(':') && line.match(/^\s*local\s+\w+\s*=/)) {
+            const match = line.match(/local\s+(\w+)\s*=\s*([.\w]+):(\w+)\(([^)]*)\)/);
+            if (match) {
+                const varName = match[1];
+                const objName = match[2];
+                const method = match[3];
+                const args = match[4];
+                actions.push({
+                    type: 'call_method_assign',
+                    varName: varName,
+                    objName: objName,
+                    method: method,
+                    args: args
+                });
+                continue;
+            }
+        }
+
+        // Handle method calls (standalone like workspace:FindFirstChild)
+
+        // Handle other variable assignments
         if (line.includes('=')) {
             const match = line.match(/(?:local\s+)?(\w+)\s*=\s*(.+)/);
             if (match) {
@@ -848,6 +1110,75 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     await new Promise(resolve => setTimeout(resolve, waitTime));
                     break;
 
+                case 'connect_event':
+                    // Handle Touched:Connect and similar event connections
+                    console.log('[DEBUG] Executing connect_event:', action.varName, action.eventName);
+                    console.log('[DEBUG] Full action object:', JSON.stringify(action, null, 2));
+                    
+                    // Get the target object
+                    let targetEventObj = variables[action.varName] || luaObjects[action.varName];
+                    
+                    // Handle workspace prefix
+                    if (!targetEventObj && action.varName.startsWith('workspace.')) {
+                        const objName = action.varName.substring('workspace.'.length);
+                        targetEventObj = luaObjects[objName];
+                        console.log('[DEBUG] Resolved workspace prefix:', action.varName, '->', objName, '=', targetEventObj);
+                    }
+                    
+                    console.log('[DEBUG] targetEventObj:', targetEventObj);
+                    
+                    if (targetEventObj && targetEventObj[action.eventName]) {
+                        console.log('[DEBUG] Found event:', action.eventName, 'on target');
+                        // Get the event (Touched, etc.)
+                        const eventObj = targetEventObj[action.eventName];
+                        console.log('[DEBUG] eventObj:', eventObj);
+                        
+                        if (eventObj && eventObj.Connect) {
+                            console.log('[DEBUG] eventObj.Connect exists');
+                            // Create a callback function that will be called when the event fires
+                            const callback = function(hit) {
+                                console.log('[TOUCHED CALLBACK] Called with hit:', hit);
+                                console.log('[TOUCHED CALLBACK] Captured action:', JSON.stringify(action, null, 2));
+                                // Set the parameter variable so it can be used in the function body
+                                const params = action.params ? action.params.split(',').map(p => p.trim()) : [];
+                                if (params.length > 0) {
+                                    variables[params[0]] = hit;
+                                    console.log('[TOUCHED CALLBACK] Set', params[0], '=', hit);
+                                }
+                                
+                                // Execute the function body
+                                console.log('[TOUCHED CALLBACK] Checking functionLines:', action.functionLines);
+                                if (action.functionLines && action.functionLines.length > 0) {
+                                    console.log('[TOUCHED CALLBACK] Executing function body with', action.functionLines.length, 'lines');
+                                    const funcBody = action.functionLines.join('\n');
+                                    console.log('[TOUCHED CALLBACK] funcBody:', funcBody);
+                                    const funcActions = interpretLuaScript(funcBody);
+                                    console.log('[TOUCHED CALLBACK] funcActions:', funcActions);
+                                    executeLuaActions(funcActions, variables);
+                                } else {
+                                    console.log('[TOUCHED CALLBACK] Function body is empty!');
+                                }
+                            };
+                            
+                            // Connect to the event
+                            const connection = eventObj.Connect(callback);
+                            console.log('[DEBUG] Connected callback to', action.varName, action.eventName);
+                        } else {
+                            console.log('[DEBUG] eventObj.Connect does NOT exist');
+                        }
+                    } else {
+                        console.log('[DEBUG] Event', action.eventName, 'NOT found on target');
+                        console.log('[DEBUG] targetEventObj keys:', targetEventObj ? Object.keys(targetEventObj) : 'undefined');
+                    }
+                    break;
+
+                case 'wait_variable':
+                    // Wait with variable expression
+                    const waitSeconds = evaluateMathExpression(action.secondsExpr, variables) || 0.03;
+                    const waitMs = waitSeconds * 1000;
+                    await new Promise(resolve => setTimeout(resolve, waitMs));
+                    break;
+
                 case 'for_loop':
                     // Execute for loop with delays between iterations to prevent blocking
                     const executeForLoopWithDelay = async () => {
@@ -865,6 +1196,42 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     };
                     
                     executeForLoopWithDelay();
+                    break;
+
+                case 'pairs_loop':
+                    // Execute pairs loop: for _, obj in pairs(table) do
+                    const executePairsLoop = async () => {
+                        // Get the table to iterate over
+                        let tableObj;
+                        if (action.tableExpr === 'workspace:GetChildren()') {
+                            tableObj = RobloxEnvironment.Workspace.Children;
+                        } else if (action.tableExpr.startsWith('workspace.')) {
+                            const partName = action.tableExpr.replace('workspace.', '');
+                            tableObj = RobloxEnvironment.Workspace.FindFirstChild(partName);
+                            if (tableObj && tableObj.Children) {
+                                tableObj = tableObj.Children;
+                            }
+                        } else {
+                            tableObj = variables[action.tableExpr];
+                        }
+                        
+                        if (tableObj && Array.isArray(tableObj)) {
+                            for (const item of tableObj) {
+                                // Set loop variables
+                                variables[action.keyVar] = null; // _ is ignored
+                                variables[action.valueVar] = item;
+                                
+                                // Execute loop body
+                                const loopActions = interpretLuaScript(action.body.join('\n'));
+                                executeLuaActions(loopActions, variables);
+                                
+                                // Small delay to allow browser to render
+                                await new Promise(r => setTimeout(r, 0));
+                            }
+                        }
+                    };
+                    
+                    executePairsLoop();
                     break;
 
                 case 'while_loop':
@@ -891,6 +1258,52 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     };
                     
                     executeLoopWithDelay();
+                    break;
+
+                case 'if_statement':
+                    // Evaluate condition and execute if or else body
+                    let conditionValue = false;
+                    
+                    // Check if condition is a variable (truthy check)
+                    if (action.condition.includes('==')) {
+                        // Equality comparison
+                        const parts = action.condition.split('==').map(p => p.trim());
+                        const left = evaluateMathExpression(parts[0], variables);
+                        const right = parseValue(parts[1]);
+                        conditionValue = left == right;
+                    } else if (action.condition.includes('~=')) {
+                        // Inequality comparison
+                        const parts = action.condition.split('~=').map(p => p.trim());
+                        const left = evaluateMathExpression(parts[0], variables);
+                        const right = parseValue(parts[1]);
+                        conditionValue = left != right;
+                    } else {
+                        // Simple truthy check - check if variable is not nil/false
+                        const condVar = action.condition.trim();
+                        if (variables.hasOwnProperty(condVar)) {
+                            const varValue = variables[condVar];
+                            // A proxy object or any truthy value - check if not null/undefined/false
+                            conditionValue = varValue !== null && varValue !== undefined && varValue !== false;
+                        } else {
+                            // Parse as literal value (nil, true, false, number)
+                            const parsed = parseValue(action.condition);
+                            conditionValue = parsed !== null && parsed !== undefined && parsed !== false && parsed !== 'nil';
+                        }
+                    }
+                    
+                    console.log('[DEBUG] If condition:', action.condition, '=> result:', conditionValue);
+                    
+                    if (conditionValue) {
+                        console.log('[DEBUG] Executing if body with', action.ifBody.length, 'lines');
+                        // Execute if body
+                        const ifActions = interpretLuaScript(action.ifBody.join('\n'));
+                        console.log('[DEBUG] If body parsed as', ifActions.length, 'actions');
+                        executeLuaActions(ifActions, variables);
+                    } else if (action.elseBody && action.elseBody.length > 0) {
+                        // Execute else body
+                        const elseActions = interpretLuaScript(action.elseBody.join('\n'));
+                        executeLuaActions(elseActions, variables);
+                    }
                     break;
 
                 case 'create_instance':
@@ -1067,8 +1480,12 @@ async function executeLuaActions(actions, initialVariables = {}) {
                         targetObj = resolvePropertyAccess(action.varName, variables);
                     }
 
+                    console.log('[DEBUG] set_property:', action.varName, '.', action.property, '= action.value:', action.value);
+                    console.log('[DEBUG] targetObj:', targetObj);
+
                     if (targetObj) {
                         const value = parseValue(action.value);
+                        console.log('[DEBUG] parsed value:', value);
 
                         switch (action.property) {
                             case 'Position':
@@ -1310,53 +1727,50 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     break;
 
                 case 'connect_event':
+                    console.log('[DEBUG] Executing connect_event:', action.varName, action.eventName);
                     let eventObj = variables[action.varName] || luaObjects[action.varName];
+
+                    // Handle workspace.prefix
+                    if (!eventObj && action.varName.startsWith('workspace.')) {
+                        const objName = action.varName.substring('workspace.'.length);
+                        eventObj = luaObjects[objName];
+                    }
 
                     // Handle property access like workspace.MyPart
                     if (!eventObj && action.varName.includes('.')) {
                         eventObj = resolvePropertyAccess(action.varName, variables);
                     }
 
-                    if (eventObj) {
-                        // Create event connection
-                        const connection = {
-                            object: eventObj,
-                            eventName: action.eventName,
-                            callback: function(...args) {
-                                // Execute the function body with access to the current variables scope
-                                executeFunctionBody(action.functionLines, action.params, args, variables);
-                            }
-                        };
-
-                        // Store connection for cleanup
-                        if (!eventObj.connections) eventObj.connections = [];
-                        eventObj.connections.push(connection);
-
-                        // Set up actual event listeners based on event type
-                        if (action.eventName === 'Touched') {
-                            // For parts, we'll simulate touch events
-                            eventObj.touched = false;
-                        } else if (action.eventName === 'MouseButton1Click') {
-                            // For GUI objects, use the Connect method if available (TextButton), otherwise direct listener
-                            if (eventObj instanceof GuiObject && eventObj.element) {
-                                if (eventObj.MouseButton1Click && eventObj.MouseButton1Click.Connect) {
-                                    // Use the object's Connect method (for TextButton)
-                                    eventObj.MouseButton1Click.Connect(() => {
-                                        // Execute the function body with access to the current variables scope
-                                        executeFunctionBody(action.functionLines, action.params, [], variables);
-                                    });
-                                } else {
-                                    // Fallback to direct event listener for other GUI objects
-                                    eventObj.element.addEventListener('click', () => {
-                                        // Execute the function body with access to the current variables scope
-                                        executeFunctionBody(action.functionLines, action.params, [], variables);
-                                    });
+                    if (eventObj && eventObj[action.eventName]) {
+                        const event = eventObj[action.eventName];
+                        
+                        if (event && event.Connect) {
+                            console.log('[DEBUG] Found event:', action.eventName, 'and Connect method');
+                            
+                            // Create callback that executes the function body
+                            const callback = function(hit) {
+                                console.log('[TOUCHED CALLBACK] Called with hit:', hit);
+                                
+                                // Set the parameter variable
+                                const params = action.params ? action.params.split(',').map(p => p.trim()) : [];
+                                if (params.length > 0) {
+                                    variables[params[0]] = hit;
                                 }
-                            }
+                                
+                                // Execute function body
+                                if (action.functionLines && action.functionLines.length > 0) {
+                                    console.log('[TOUCHED CALLBACK] Executing function body:', action.functionLines);
+                                    const funcActions = interpretLuaScript(action.functionLines.join('\n'));
+                                    executeLuaActions(funcActions, variables);
+                                }
+                            };
+                            
+                            // Connect to the event
+                            event.Connect(callback);
+                            console.log('[DEBUG] Connected callback to', action.varName, action.eventName);
                         }
-
-                        RobloxEnvironment.connections = RobloxEnvironment.connections || [];
-                        RobloxEnvironment.connections.push(connection);
+                    } else {
+                        console.log('[DEBUG] Event not found:', action.varName, action.eventName);
                     }
                     break;
 
@@ -1364,19 +1778,128 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     functions[action.funcName] = action.functionLines;
                     break;
 
-                case 'call_method':
-                    let methodObj = variables[action.varName] || luaObjects[action.varName];
+                case 'call_method_assign':
+                    // Handle: local var = object:method(args)
+                    let targetForMethod = null;
+                    
+                    // Resolve the object
+                    if (action.objName === 'workspace') {
+                        targetForMethod = RobloxEnvironment.Workspace;
+                    } else if (action.objName === 'game') {
+                        targetForMethod = window.game;
+                    } else {
+                        targetForMethod = variables[action.objName] || luaObjects[action.objName];
+                    }
+                    
+                    if (targetForMethod && targetForMethod[action.method]) {
+                        let result = null;
+                        
+                        // Extract string argument if present
+                        let argValue = action.args;
+                        if (action.args.match(/["']([^"']+)["']/)) {
+                            argValue = action.args.match(/["']([^"']+)["']/)[1];
+                        }
+                        
+                        // Call the method
+                        if (action.method === 'FindFirstChild') {
+                            result = targetForMethod.FindFirstChild(argValue);
+                            console.log(`FindFirstChild("${argValue}") =`, result);
+                        } else {
+                            result = targetForMethod[action.method](argValue);
+                        }
+                        
+                        // Store result in variable
+                        variables[action.varName] = result;
+                        console.log(`Stored ${action.varName} =`, result);
+                    } else {
+                        console.error(`Error: Object '${action.objName}' or method '${action.method}' not found`);
+                    }
+                    break;
 
-                    // Handle property access like workspace.MySound
-                    if (!methodObj && action.varName.includes('.')) {
-                        methodObj = resolvePropertyAccess(action.varName, variables);
+                case 'call_method':
+                    console.log('[DEBUG] call_method:', action.varName, action.method, action.args);
+                    console.log('[DEBUG] variables keys:', Object.keys(variables));
+                    let targetMethodObj = variables[action.varName] || luaObjects[action.varName];
+
+                    // Handle special cases like workspace, game.Player
+                    if (!targetMethodObj) {
+                        if (action.varName === 'workspace') {
+                            targetMethodObj = RobloxEnvironment.Workspace;
+                        } else if (action.varName === 'game') {
+                            targetMethodObj = window.game;
+                        } else if (action.varName === 'game.Player') {
+                            // Return a player object with health methods
+                            targetMethodObj = {
+                                TakeDamage: function(amount) {
+                                    playerHealth = Math.max(0, playerHealth - amount);
+                                    // Update health bar UI
+                                    document.getElementById('health-text').textContent = playerHealth;
+                                    document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
+                                    
+                                    // Check if player died
+                                    if (playerHealth <= 0) {
+                                        console.log('Player died from script damage!');
+                                        addConsoleOutput('You died!', 'error');
+                                        if (player) {
+                                            // Player exists, respawn immediately
+                                            respawnPlayer();
+                                        } else {
+                                            // Player doesn't exist yet, set pending death flag
+                                            pendingDeath = true;
+                                        }
+                                    }
+                                    
+                                    console.log(`TakeDamage(${amount}): playerHealth =`, playerHealth);
+                                    addConsoleOutput(`Took ${amount} damage! Health: ${playerHealth}`, 'info');
+                                },
+                                Heal: function(amount) {
+                                    playerHealth = Math.min(maxHealth, playerHealth + amount);
+                                    // Update health bar UI
+                                    document.getElementById('health-text').textContent = playerHealth;
+                                    document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
+                                    console.log(`Heal(${amount}): playerHealth =`, playerHealth);
+                                    addConsoleOutput(`Healed ${amount}! Health: ${playerHealth}`, 'info');
+                                },
+                                SetHealth: function(amount) {
+                                    const previousHealth = playerHealth;
+                                    playerHealth = Math.max(0, Math.min(maxHealth, amount));
+                                    // Update health bar UI
+                                    document.getElementById('health-text').textContent = playerHealth;
+                                    document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
+                                    
+                                    // Check if player died
+                                    if (previousHealth > 0 && playerHealth <= 0) {
+                                        console.log('Player died from SetHealth!');
+                                        addConsoleOutput('You died!', 'error');
+                                        if (player) {
+                                            // Player exists, respawn immediately
+                                            respawnPlayer();
+                                        } else {
+                                            // Player doesn't exist yet, set pending death flag
+                                            pendingDeath = true;
+                                        }
+                                    }
+                                    
+                                    console.log(`SetHealth(${amount}): playerHealth =`, playerHealth);
+                                    addConsoleOutput(`Set health to ${amount}`, 'info');
+                                },
+                                GetHealth: function() {
+                                    return playerHealth;
+                                }
+                            };
+                        }
                     }
 
-                    if (methodObj) {
+                    // Handle property access like workspace.MySound
+                    if (!targetMethodObj && action.varName.includes('.')) {
+                        targetMethodObj = resolvePropertyAccess(action.varName, variables);
+                    }
+
+                    if (targetMethodObj) {
                         switch (action.method) {
                             case 'Spin':
                             case 'spin':
-                                if (methodObj.Spin) {
+                                if (targetMethodObj.Spin) {
                                     let axis = null;
                                     if (action.args && action.args.trim()) {
                                         const args = action.args.split(',').map(arg => arg.trim());
@@ -1384,35 +1907,35 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                             axis = parseValue(args[0]);
                                         }
                                     }
-                                    methodObj.Spin(axis);
+                                    targetMethodObj.Spin(axis);
                                 }
                                 break;
                             case 'Play':
-                                if (methodObj.ClassName === 'Sound') {
+                                if (targetMethodObj.ClassName === 'Sound') {
                                     // Mark sound as pending play - will be played on next user interaction
-                                    methodObj.pendingPlay = true;
+                                    targetMethodObj.pendingPlay = true;
                                     console.log('Sound marked for playback on next user interaction');
 
                                     // Try to play immediately (might work if user has interacted recently)
-                                    playSoundIfAllowed(methodObj);
+                                    playSoundIfAllowed(targetMethodObj);
                                 }
                                 break;
                             case 'Stop':
-                                if (methodObj.ClassName === 'Sound') {
-                                    if (methodObj.html5Audio) {
-                                        methodObj.html5Audio.pause();
-                                        methodObj.html5Audio.currentTime = 0;
+                                if (targetMethodObj.ClassName === 'Sound') {
+                                    if (targetMethodObj.html5Audio) {
+                                        targetMethodObj.html5Audio.pause();
+                                        targetMethodObj.html5Audio.currentTime = 0;
                                     }
-                                    if (methodObj.audio) {
-                                        methodObj.audio.stop();
+                                    if (targetMethodObj.audio) {
+                                        targetMethodObj.audio.stop();
                                     }
-                                    methodObj.isPlaying = false;
-                                    methodObj.pendingPlay = false; // Cancel any pending play
+                                    targetMethodObj.isPlaying = false;
+                                    targetMethodObj.pendingPlay = false; // Cancel any pending play
                                 }
                                 break;
                             case 'Destroy':
-                                if (methodObj.Destroy) {
-                                    methodObj.Destroy();
+                                if (targetMethodObj.Destroy) {
+                                    targetMethodObj.Destroy();
                                     delete variables[action.varName];
                                     delete luaObjects[action.varName];
                                 }
@@ -1422,6 +1945,95 @@ async function executeLuaActions(actions, initialVariables = {}) {
                                 const waitTime = parseFloat(action.args) || 0.03; // Default to 0.03 seconds
                                 await RobloxEnvironment.wait(waitTime);
                                 addOutput(`Waited for ${waitTime} seconds`, 'success');
+                                break;
+                            case 'FindFirstChild':
+                                // Handle FindFirstChild("name")
+                                let result = null;
+                                if (action.args) {
+                                    // Extract string argument
+                                    const argMatch = action.args.match(/["']([^"']+)["']/);
+                                    const childName = argMatch ? argMatch[1] : action.args.trim();
+                                    
+                                    // Find in the target object
+                                    if (targetMethodObj && targetMethodObj.FindFirstChild) {
+                                        result = targetMethodObj.FindFirstChild(childName);
+                                    }
+                                    
+                                    console.log(`FindFirstChild("${childName}") =`, result);
+                                }
+                                
+                                // Store result in variable
+                                variables[action.varName] = result;
+                                console.log(`Stored ${action.varName} =`, variables[action.varName]);
+                                break;
+                            case 'TakeDamage':
+                                // Handle TakeDamage(amount)
+                                console.log(`[DEBUG] TakeDamage called with action.varName=${action.varName}, action.method=${action.method}, action.args=${action.args}`);
+                                const damageAmount = parseFloat(action.args) || 0;
+                                playerHealth = Math.max(0, playerHealth - damageAmount);
+                                // Update health bar UI
+                                document.getElementById('health-text').textContent = playerHealth;
+                                document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
+                                
+                                // Check if player died
+                                if (playerHealth <= 0) {
+                                    console.log('Player died from script damage!');
+                                    addConsoleOutput('You died!', 'error');
+                                    if (player) {
+                                        // Player exists, respawn immediately
+                                        respawnPlayer();
+                                    } else {
+                                        // Player doesn't exist yet, set pending death flag
+                                        pendingDeath = true;
+                                    }
+                                }
+                                
+                                console.log(`TakeDamage(${damageAmount}): playerHealth =`, playerHealth);
+                                addConsoleOutput(`Took ${damageAmount} damage! Health: ${playerHealth}`, 'info');
+                                break;
+                            case 'Heal':
+                                // Handle Heal(amount)
+                                const healAmount = parseFloat(action.args) || 0;
+                                playerHealth = Math.min(maxHealth, playerHealth + healAmount);
+                                // Update health bar UI
+                                document.getElementById('health-text').textContent = playerHealth;
+                                document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
+                                console.log(`Heal(${healAmount}): playerHealth =`, playerHealth);
+                                addConsoleOutput(`Healed ${healAmount}! Health: ${playerHealth}`, 'info');
+                                break;
+                            case 'SetHealth':
+                                // Handle SetHealth(amount)
+                                const previousHealth = playerHealth;
+                                const setHealthAmount = parseFloat(action.args) || 0;
+                                playerHealth = Math.max(0, Math.min(maxHealth, setHealthAmount));
+                                // Update health bar UI
+                                document.getElementById('health-text').textContent = playerHealth;
+                                document.getElementById('health-fill').style.width = `${(playerHealth / maxHealth) * 100}%`;
+                                
+                                // Check if player died
+                                if (previousHealth > 0 && playerHealth <= 0) {
+                                    console.log('Player died from SetHealth!');
+                                    addConsoleOutput('You died!', 'error');
+                                    if (player) {
+                                        // Player exists, respawn immediately
+                                        respawnPlayer();
+                                    } else {
+                                        // Player doesn't exist yet, set pending death flag
+                                        pendingDeath = true;
+                                    }
+                                }
+                                
+                                console.log(`SetHealth(${setHealthAmount}): playerHealth =`, playerHealth);
+                                addConsoleOutput(`Set health to ${setHealthAmount}`, 'info');
+                                break;
+                            case 'GetHealth':
+                                // Handle GetHealth() - return current health
+                                const currentHealth = playerHealth;
+                                console.log(`GetHealth():`, currentHealth);
+                                // Store result if this is a call_method_assign
+                                if (action.varName) {
+                                    variables[action.varName] = currentHealth;
+                                }
                                 break;
                         }
                     } else if (functions[action.varName]) {
@@ -1448,13 +2060,17 @@ async function executeLuaActions(actions, initialVariables = {}) {
                     break;
 
                 case 'set_variable':
+                    console.log('[DEBUG] Executing set_variable:', action.varName, '=', action.value);
                     // Handle complex property access like game.Workspace.part_1
                     if (action.value.includes('.')) {
                         const parts = action.value.split('.');
-                        let currentObj = variables[parts[0]] || window[parts[0]];
+                        console.log('[DEBUG] Property access parts:', parts);
+                        let currentObj = variables[parts[0]] || window[parts[0]] || RobloxEnvironment[parts[0]];
+                        console.log('[DEBUG] First part lookup:', parts[0], '=', currentObj);
                         for (let i = 1; i < parts.length; i++) {
                             if (currentObj && currentObj[parts[i]]) {
                                 currentObj = currentObj[parts[i]];
+                                console.log('[DEBUG] Resolved part:', parts[i], '=', currentObj);
                             } else {
                                 console.log(`[DEBUG] Property access failed at "${parts[i]}" in "${action.value}"`);
                                 currentObj = undefined;
@@ -1465,7 +2081,13 @@ async function executeLuaActions(actions, initialVariables = {}) {
                         console.log(`[DEBUG] Set variable ${action.varName} to:`, currentObj);
                     } else {
                         variables[action.varName] = parseValue(action.value);
+                        console.log(`[DEBUG] Set variable ${action.varName} to (simple):`, variables[action.varName]);
                     }
+                    break;
+
+                case 'set_math_variable':
+                    // Handle math functions with variable references
+                    variables[action.varName] = evaluateMathExpression(action.value, variables);
                     break;
 
                 case 'animate_part':
@@ -1520,6 +2142,34 @@ async function executeLuaActions(actions, initialVariables = {}) {
                         appendChatBoxMessage('SYSTEM', '[SCRIPT] ' + action.message);
                     }
                     break;
+
+                case 'print_variable':
+                    // Print variable value, including object properties
+                    let varValue;
+                    if (action.varName.includes('.')) {
+                        // Handle property access like obj.Name
+                        const parts = action.varName.split('.');
+                        let currentObj = variables[parts[0]];
+                        for (let i = 1; i < parts.length; i++) {
+                            if (currentObj && currentObj[parts[i]] !== undefined) {
+                                currentObj = currentObj[parts[i]];
+                            } else {
+                                currentObj = undefined;
+                                break;
+                            }
+                        }
+                        varValue = currentObj;
+                    } else {
+                        varValue = variables[action.varName];
+                    }
+                    
+                    const displayValue = varValue !== undefined ? varValue : 'nil';
+                    console.log('LUA PRINT:', action.varName, '=', displayValue);
+                    addConsoleOutput(`${action.varName} = ${displayValue}`, 'info');
+                    if (typeof appendChatBoxMessage === 'function') {
+                        appendChatBoxMessage('SYSTEM', `[SCRIPT] ${action.varName} = ${displayValue}`);
+                    }
+                    break;
             }
         } catch (error) {
             console.error('Error executing action:', error);
@@ -1536,7 +2186,202 @@ function executeFunctionBody(functionLines, paramString, args, variables = {}) {
     executeLuaActions(functionActions, variables);
 }
 
+// Math functions for Lua scripts
+window.math = {
+    clamp: function(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    },
+    floor: function(value) {
+        return Math.floor(value);
+    },
+    ceil: function(value) {
+        return Math.ceil(value);
+    },
+    round: function(value) {
+        return Math.round(value);
+    },
+    random: function(min, max) {
+        if (min === undefined && max === undefined) {
+            return Math.random();
+        }
+        if (max === undefined) {
+            return Math.floor(Math.random() * min) + 1;
+        }
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    },
+    abs: function(value) {
+        return Math.abs(value);
+    },
+    sqrt: function(value) {
+        return Math.sqrt(value);
+    },
+    pow: function(base, exp) {
+        return Math.pow(base, exp);
+    },
+    sin: function(value) {
+        return Math.sin(value);
+    },
+    cos: function(value) {
+        return Math.cos(value);
+    },
+    tan: function(value) {
+        return Math.tan(value);
+    },
+    pi: Math.PI
+};
+
+// Evaluate math expressions with variable resolution
+function evaluateMathExpression(expr, variables) {
+    // Check for math.clamp(x, min, max)
+    const clampMatch = expr.match(/math\.clamp\(([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+    if (clampMatch) {
+        const value = evaluateMathExpression(clampMatch[1].trim(), variables);
+        const min = evaluateMathExpression(clampMatch[2].trim(), variables);
+        const max = evaluateMathExpression(clampMatch[3].trim(), variables);
+        return Math.max(min, Math.min(max, value));
+    }
+
+    // Check for math.floor(x)
+    const floorMatch = expr.match(/math\.floor\(([^)]+)\)/);
+    if (floorMatch) {
+        return Math.floor(evaluateMathExpression(floorMatch[1].trim(), variables));
+    }
+
+    // Check for math.ceil(x)
+    const ceilMatch = expr.match(/math\.ceil\(([^)]+)\)/);
+    if (ceilMatch) {
+        return Math.ceil(evaluateMathExpression(ceilMatch[1].trim(), variables));
+    }
+
+    // Check for math.round(x)
+    const roundMatch = expr.match(/math\.round\(([^)]+)\)/);
+    if (roundMatch) {
+        return Math.round(evaluateMathExpression(roundMatch[1].trim(), variables));
+    }
+
+    // Check for math.abs(x)
+    const absMatch = expr.match(/math\.abs\(([^)]+)\)/);
+    if (absMatch) {
+        return Math.abs(evaluateMathExpression(absMatch[1].trim(), variables));
+    }
+
+    // Check for math.sqrt(x)
+    const sqrtMatch = expr.match(/math\.sqrt\(([^)]+)\)/);
+    if (sqrtMatch) {
+        return Math.sqrt(evaluateMathExpression(sqrtMatch[1].trim(), variables));
+    }
+
+    // Check for math.clamp(x, min, max)
+    const clampMatch2 = expr.match(/math\.clamp\(([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+    if (clampMatch2) {
+        const value = evaluateMathExpression(clampMatch2[1].trim(), variables);
+        const minVal = evaluateMathExpression(clampMatch2[2].trim(), variables);
+        const maxVal = evaluateMathExpression(clampMatch2[3].trim(), variables);
+        return Math.max(minVal, Math.min(value, maxVal));
+    }
+
+    // Check for division: x / y
+    const divMatch = expr.match(/^(.+)\s*\/\s*(.+)$/);
+    if (divMatch) {
+        const left = evaluateMathExpression(divMatch[1].trim(), variables);
+        const right = evaluateMathExpression(divMatch[2].trim(), variables);
+        return left / right;
+    }
+
+    // Check for multiplication: x * y
+    const mulMatch = expr.match(/^(.+)\s*\*\s*(.+)$/);
+    if (mulMatch) {
+        const left = evaluateMathExpression(mulMatch[1].trim(), variables);
+        const right = evaluateMathExpression(mulMatch[2].trim(), variables);
+        return left * right;
+    }
+
+    // Check for addition: x + y
+    const addMatch = expr.match(/^(.+)\s*\+\s*(.+)$/);
+    if (addMatch) {
+        const left = evaluateMathExpression(addMatch[1].trim(), variables);
+        const right = evaluateMathExpression(addMatch[2].trim(), variables);
+        return left + right;
+    }
+
+    // Check for subtraction: x - y
+    const subMatch = expr.match(/^(.+)\s*\-\s*(.+)$/);
+    if (subMatch) {
+        const left = evaluateMathExpression(subMatch[1].trim(), variables);
+        const right = evaluateMathExpression(subMatch[2].trim(), variables);
+        return left - right;
+    }
+
+    // Check if it's a variable reference
+    if (variables.hasOwnProperty(expr)) {
+        return variables[expr];
+    }
+
+    // Try to parse as a number
+    const num = parseFloat(expr);
+    if (!isNaN(num)) {
+        return num;
+    }
+
+    // Return as-is (likely a string or undefined)
+    return expr;
+}
+
 function parseValue(valueStr) {
+    // Parse math.clamp(x, min, max)
+    const clampMatch = valueStr.match(/math\.clamp\(([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+    if (clampMatch) {
+        const value = parseValue(clampMatch[1].trim());
+        const min = parseValue(clampMatch[2].trim());
+        const max = parseValue(clampMatch[3].trim());
+        return Math.max(min, Math.min(max, value));
+    }
+
+    // Parse math.floor(x)
+    const floorMatch = valueStr.match(/math\.floor\(([^)]+)\)/);
+    if (floorMatch) {
+        return Math.floor(parseValue(floorMatch[1].trim()));
+    }
+
+    // Parse math.ceil(x)
+    const ceilMatch = valueStr.match(/math\.ceil\(([^)]+)\)/);
+    if (ceilMatch) {
+        return Math.ceil(parseValue(ceilMatch[1].trim()));
+    }
+
+    // Parse math.round(x)
+    const roundMatch = valueStr.match(/math\.round\(([^)]+)\)/);
+    if (roundMatch) {
+        return Math.round(parseValue(roundMatch[1].trim()));
+    }
+
+    // Parse math.random() or math.random(min, max)
+    const randomMatch = valueStr.match(/math\.random\(([^)]*)\)/);
+    if (randomMatch) {
+        const args = randomMatch[1].split(',').map(s => s.trim()).filter(s => s);
+        if (args.length === 0) {
+            return Math.random();
+        } else if (args.length === 1) {
+            return Math.floor(Math.random() * parseFloat(args[0])) + 1;
+        } else {
+            const min = parseFloat(args[0]);
+            const max = parseFloat(args[1]);
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+    }
+
+    // Parse math.abs(x)
+    const absMatch = valueStr.match(/math\.abs\(([^)]+)\)/);
+    if (absMatch) {
+        return Math.abs(parseValue(absMatch[1].trim()));
+    }
+
+    // Parse math.sqrt(x)
+    const sqrtMatch = valueStr.match(/math\.sqrt\(([^)]+)\)/);
+    if (sqrtMatch) {
+        return Math.sqrt(parseValue(sqrtMatch[1].trim()));
+    }
+
     // Parse Vector2.new(x, y)
     const vector2Match = valueStr.match(/Vector2\.new\(([^,]+),\s*([^)]+)\)/);
     if (vector2Match) {
@@ -3399,6 +4244,15 @@ function initGame() {
         const fallbackHead = new THREE.Mesh(headGeometry, headMaterial);
         player = createPlayer(fallbackHead);
         scene.add(player);
+        
+        // Check if player died before initialization
+        if (pendingDeath && playerHealth <= 0) {
+            console.log('Processing pending death after player initialization');
+            addConsoleOutput('You died!', 'error');
+            respawnPlayer();
+            pendingDeath = false;
+        }
+        
         initSocket();
         animate();
     });
@@ -3497,6 +4351,29 @@ function ensurePlayerPhysicsBody() {
                 }
                 hasJumpedThisCycle = false;
                 canJumpFromGround = true;
+                
+                // Trigger Touched event on the other body if it has Touched callbacks
+                const otherInstance = otherBody.userData?.instance;
+                console.log(`[TOUCHED DEBUG] Player collided with otherBody:`, otherBody.userData);
+                if (otherInstance) {
+                    console.log(`[TOUCHED DEBUG] otherInstance:`, otherInstance.Name, otherInstance.touchedCallbacks?.length);
+                }
+                if (otherInstance && otherInstance.touchedCallbacks && otherInstance.touchedCallbacks.length > 0) {
+                    // Create a player-like object for the hit parameter
+                    const playerHitObject = {
+                        Name: 'HumanoidRootPart',
+                        ClassName: 'Part',
+                        Parent: player
+                    };
+                    console.log(`[TOUCHED] Player touched ${otherInstance.Name}`);
+                    otherInstance.touchedCallbacks.forEach(callback => {
+                        try {
+                            callback(playerHitObject);
+                        } catch (err) {
+                            console.error(`[TOUCHED] Error in player touch callback: ${err.message}`);
+                        }
+                    });
+                }
             } catch (err) {
                 console.warn('Player collide handler error', err);
             }
@@ -4061,10 +4938,22 @@ async function loadGameData(data, isPublished = false) {
                     // Add collision event listener for Touched events only (no extra bounce)
                     body.addEventListener('collide', (e) => {
                         const otherBody = e.body;
-
-                        // Trigger Touched event if the instance has a Touched connection
-                        if (robloxPart.touched && typeof robloxPart.touched === 'function') {
-                            robloxPart.touched(otherBody.userData?.instance || otherBody);
+                        
+                        // Trigger Touched event if the instance has callbacks
+                        if (robloxPart.touchedCallbacks && robloxPart.touchedCallbacks.length > 0) {
+                            const hitObject = otherBody.userData?.instance || {
+                                Name: otherBody.userData?.mesh?.name || 'Unknown',
+                                ClassName: 'Part'
+                            };
+                            console.log(`[TOUCHED] Collision detected on ${partName} with ${hitObject.Name}`);
+                            // Call all connected callbacks
+                            robloxPart.touchedCallbacks.forEach(callback => {
+                                try {
+                                    callback(hitObject);
+                                } catch (err) {
+                                    console.error(`[TOUCHED] Error in touch callback: ${err.message}`);
+                                }
+                            });
                         }
                     });
 
@@ -4745,6 +5634,13 @@ function respawnPlayer() {
     if (currentDeathSound && currentDeathSound.buffer) {
         if (currentDeathSound.isPlaying) currentDeathSound.stop();
         currentDeathSound.play();
+    } else {
+        console.log('[DEBUG] Death sound not loaded yet, playing fallback sound');
+        // Play ouch sound as fallback
+        if (ouchSound && ouchSound.buffer) {
+            if (ouchSound.isPlaying) ouchSound.stop();
+            ouchSound.play();
+        }
     }
 }
 

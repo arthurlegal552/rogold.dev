@@ -3880,7 +3880,7 @@ function saveProject() {
 
     const projectData = {
         scripts: scripts,
-        objects: luaObjects,
+        objects: serializeGameState(),
         timestamp: new Date().toISOString(),
         // Use ENGINE_VERSION instead of hardcoded '1.0'
         engineVersion: ENGINE_VERSION,
@@ -4643,10 +4643,10 @@ async function loadGameFromURL(gameId) {
                     const instance = new RobloxInstance(objData.ClassName || 'Part', name);
 
                     // Restore properties
-                    if (objData.Size) instance.Size = new THREE.Vector3().fromArray(objData.Size);
-                    if (objData.Position) instance.Position = new THREE.Vector3().fromArray(objData.Position);
-                    if (objData.Rotation) instance.Rotation = new THREE.Euler(objData.Rotation[0], objData.Rotation[1], objData.Rotation[2]);
-                    if (objData.Color) instance.Color = new THREE.Color().fromArray(objData.Color);
+                    if (objData.Size && Array.isArray(objData.Size)) instance.Size = new THREE.Vector3().fromArray(objData.Size);
+                    if (objData.Position && Array.isArray(objData.Position)) instance.Position = new THREE.Vector3().fromArray(objData.Position);
+                    if (objData.Rotation && Array.isArray(objData.Rotation)) instance.Rotation = new THREE.Euler(objData.Rotation[0], objData.Rotation[1], objData.Rotation[2]);
+                    if (objData.Color && Array.isArray(objData.Color)) instance.Color = new THREE.Color().fromArray(objData.Color);
                     if (objData.Anchored !== undefined) instance.Anchored = objData.Anchored;
                     if (objData.CanCollide !== undefined) instance.CanCollide = objData.CanCollide;
                     if (objData.Transparency !== undefined) instance.Transparency = objData.Transparency;
@@ -4664,7 +4664,7 @@ async function loadGameFromURL(gameId) {
                     // Restore GUI properties
                     if (objData.BackgroundTransparency !== undefined) instance.BackgroundTransparency = objData.BackgroundTransparency;
                     if (objData.TextTransparency !== undefined) instance.TextTransparency = objData.TextTransparency;
-                    if (objData.TextColor3 !== undefined) instance.TextColor3 = new THREE.Color().fromArray(objData.TextColor3);
+                    if (objData.TextColor3 && Array.isArray(objData.TextColor3)) instance.TextColor3 = new THREE.Color().fromArray(objData.TextColor3);
                     if (objData.TextSize !== undefined) instance.TextSize = objData.TextSize;
                     if (objData.Text !== undefined) instance.Text = objData.Text;
 
