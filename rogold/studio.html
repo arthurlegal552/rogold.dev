@@ -280,6 +280,35 @@
             border: 1px inset #c0c0c0;
         }
 
+        .selection-context-menu {
+            position: absolute;
+            background: #ece9d8;
+            border: 2px outset #c0c0c0;
+            padding: 2px 0;
+            z-index: 1000;
+            min-width: 120px;
+            box-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .selection-context-menu-item {
+            padding: 4px 12px;
+            cursor: pointer;
+            font-family: Tahoma, sans-serif;
+            font-size: 11px;
+            color: #000000;
+        }
+
+        .selection-context-menu-item:hover {
+            background: #316ac5;
+            color: #ffffff;
+        }
+
+        .selection-context-menu-divider {
+            height: 1px;
+            background: #c0c0c0;
+            margin: 2px 0;
+        }
+
         .viewport-canvas {
             display: block;
         }
@@ -487,6 +516,14 @@
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script type="module" src="studio.js"></script>
+    
+    <!-- Selection Context Menu -->
+    <div id="selection-context-menu" class="selection-context-menu" style="display: none;">
+        <div class="selection-context-menu-item" id="context-duplicate">Duplicate</div>
+        <div class="selection-context-menu-divider"></div>
+        <div class="selection-context-menu-item" id="context-delete">Delete</div>
+    </div>
+    
     <script>
         // Enhanced Code Editor Class (for backward compatibility)
         class RobloxCodeEditor {

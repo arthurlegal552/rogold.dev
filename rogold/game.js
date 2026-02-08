@@ -81,6 +81,20 @@ console.log(`%c RoGold Engine v${ENGINE_VERSION} `, 'background: #1a1a2e; color:
 console.log(`[VERSION] Engine initialized. Version: ${ENGINE_VERSION}, Minimum Compatible: ${MINIMUM_COMPATIBLE_VERSION}`);
 
 /**
+ * Add a message to the console output
+ */
+function addOutput(message, type = 'normal') {
+    const consoleOutput = document.getElementById('console-output');
+    if (!consoleOutput) return;
+    
+    const msgElement = document.createElement('div');
+    msgElement.className = `console-${type}`;
+    msgElement.innerHTML = message;
+    consoleOutput.appendChild(msgElement);
+    consoleOutput.scrollTop = consoleOutput.scrollHeight;
+}
+
+/**
  * Load a GLTF/GLB model with automatic cache busting
  * @param {string} url - The model URL
  * @param {Function} onLoad - Callback when loaded
@@ -1828,9 +1842,13 @@ class TextButton extends GuiObject {
             this.element.addEventListener('mouseenter', () => {
                 const color = this.BackgroundColor.clone().multiplyScalar(0.9);
                 this.element.style.backgroundColor = `#${color.getHexString()}`;
+                // Change cursor to cursor2 when hovering
+                this.element.style.cursor = "url('imgs/cursor2.png'), pointer";
             });
             this.element.addEventListener('mouseleave', () => {
                 this.element.style.backgroundColor = `#${this.BackgroundColor.getHexString()}`;
+                // Revert cursor back to pointer
+                this.element.style.cursor = 'pointer';
             });
         } catch (error) {
             console.error(`Error setting up hover effects for ${this.ClassName} ${this.Name}:`, error.message);
@@ -5121,6 +5139,17 @@ function unequipTool() {
 }
 // Button and keyboard events
 window.addEventListener('DOMContentLoaded', () => {
+    // Helper function to add cursor hover effect to buttons
+    function addCursorHoverEffect(button) {
+        if (!button) return;
+        button.addEventListener('mouseenter', () => {
+            button.style.cursor = "url('imgs/cursor2.png'), pointer";
+        });
+        button.addEventListener('mouseleave', () => {
+            button.style.cursor = 'pointer';
+        });
+    }
+    
     // Create backpack button above toolbox
     backpackToolBtn = document.createElement('button');
     backpackToolBtn.id = 'backpack-tool-btn';
@@ -5146,6 +5175,9 @@ window.addEventListener('DOMContentLoaded', () => {
             updateBackpackItems();
         }
     });
+    
+    // Add cursor hover effect for backpack button
+    addCursorHoverEffect(backpackToolBtn);
 
     const equipBtn = document.getElementById('equip-tool-btn');
     equipBtn.addEventListener('click', () => {

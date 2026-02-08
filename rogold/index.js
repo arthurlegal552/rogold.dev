@@ -3205,6 +3205,32 @@ function hideCreationBoard() {
     }, 300);
 }
 
+function showDocumentation() {
+    const docSection = document.getElementById('documentation-section');
+    const creationBoardSection = document.getElementById('creation-board-section');
+    
+    hideSection(creationBoardSection);
+    
+    setTimeout(() => {
+        showSection(docSection);
+    }, 300);
+}
+
+function hideDocumentation() {
+    const docSection = document.getElementById('documentation-section');
+    const creationBoardSection = document.getElementById('creation-board-section');
+    
+    hideSection(docSection);
+    
+    setTimeout(() => {
+        showSection(creationBoardSection);
+    }, 300);
+}
+
+// Make functions globally available
+window.showDocumentation = showDocumentation;
+window.hideDocumentation = hideDocumentation;
+
 function loadUserCreationGames() {
     const currentUser = userManager.getCurrentUser();
     const gamesGrid = document.getElementById('creation-games-grid');

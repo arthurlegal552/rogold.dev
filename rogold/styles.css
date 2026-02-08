@@ -103,7 +103,7 @@ body {
 .zoom-controls button:hover {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
-    cursor: pointer !important;
+    cursor: url('imgs/cursor2.png'), pointer !important;
 }
 
 #customize-btn, #respawn-btn, #potions-btn, #script-btn, #controls-mode-btn, #backpack-btn {
@@ -123,7 +123,7 @@ body {
 #customize-btn:hover, #backpack-btn:hover, #respawn-btn:hover, #potions-btn:hover, #script-btn:hover, #controls-mode-btn:hover {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
-    cursor: pointer !important;
+    cursor: url('imgs/cursor2.png'), pointer !important;
 }
 
 .potions-customizer {
@@ -218,7 +218,7 @@ body {
 
 .script-buttons button:hover {
     background: rgba(20,20,20,0.8);
-    cursor: pointer !important;
+    cursor: url('imgs/cursor2.png'), pointer !important;
 }
 
 #script-output {
@@ -577,6 +577,24 @@ body {
     box-shadow: 0 0 16px #ff0000, 0 0 2px #000 inset;
 }
 
+#console-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 0;
+    margin: 10px auto;
+    display: block;
+    padding: 0;
+    background: transparent;
+    border: 2px solid #555;
+    cursor: url('imgs/cursor2.png'), pointer;
+}
+
+#console-btn:hover {
+    border-color: #ff0000;
+    box-shadow: 0 0 8px #ff0000;
+    cursor: url('imgs/cursor2.png'), pointer !important;
+}
+
 #game-menu h2 {
     margin-bottom: 18px;
     font-size: 22px;
@@ -614,7 +632,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
+    cursor: url('imgs/cursor2.png'), pointer;
     font-size: 10px;
     text-align: center;
     color: white;
@@ -622,6 +640,7 @@ body {
 
 .backpack-item:hover {
     background: #444;
+    cursor: url('imgs/cursor2.png'), pointer !important;
 }
 
 #console-output {
@@ -636,6 +655,33 @@ body {
     white-space: pre-wrap;
     margin-bottom: 10px;
 }
+
+/* Console Message Types */
+#console-output .console-info {
+    color: #00A2FF;
+}
+
+#console-output .console-warning {
+    color: #FFAA00;
+}
+
+#console-output .console-error {
+    color: #FF4444;
+}
+
+#console-output .console-success {
+    color: #00FF88;
+}
+
+#console-output .console-normal {
+    color: #CCCCCC;
+}
+
+.console-timestamp {
+    color: #666;
+    font-size: 10px;
+}
+
 
 .retro-btn {
     display: block;
@@ -659,7 +705,7 @@ body {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
     outline: none;
-    cursor: pointer !important;
+    cursor: url('imgs/cursor2.png'), pointer !important;
 }
 
 .toolbox {
@@ -678,9 +724,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
+  cursor: url('imgs/cursor2.png'), pointer;
   outline: none;
   transition: bottom 0.2s ease;
+}
+
+.toolbox:hover {
+  border-color: #ff0000;
+  box-shadow: 0 0 8px #ff0000;
 }
 
 .toolbox::before {
@@ -758,7 +809,7 @@ body {
 #menu-btn:hover {
     border: 2px solid #ff0000;
     box-shadow: 0 0 8px #ff0000;
-    cursor: pointer !important;
+    cursor: url('imgs/cursor2.png'), pointer !important;
 }
 
 #menu-btn:active {
@@ -846,13 +897,13 @@ body {
 .rogold-gui.textbutton {
     background-color: #c0c0c0;
     border: 1px solid #1a1a1a;
-    cursor: pointer;
+    cursor: url('imgs/cursor2.png'), pointer;
     transition: background-color 0.1s;
 }
 
 .rogold-gui.textbutton:hover {
     background-color: #a0a0a0;
-    cursor: pointer !important;
+    cursor: url('imgs/cursor2.png'), pointer !important;
 }
 
 .rogold-gui.textbutton:active {

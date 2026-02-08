@@ -464,17 +464,18 @@ footer p {
 /* Apply transitions to all relevant sections that are dynamically shown/hidden */
 #profile-section,
 #community-section,
-#catalog-section, /* NEW: Add catalog section to transition list */
-#item-detail-section, /* Add item detail section */
-#creation-board-section, /* Add creation board section */
+#catalog-section,
+#item-detail-section,
+#creation-board-section,
+#documentation-section,
 #login-section,
 #register-section,
 #settings-section,
 #profile-edit-section,
 #create-blog-form,
-#blog-detail, /* Add blog detail */
-#blog-list, /* Add blog list */
-#credits-section /* Credits section */
+#blog-detail,
+#blog-list,
+#credits-section
 {
     transition: opacity 0.3s ease;
 }
@@ -1216,6 +1217,122 @@ dialog::backdrop {
     font-size: 20px;
     color: #000;
     text-shadow: 1px 1px 0 #fff;
+}
+
+.creation-actions {
+    display: flex;
+    gap: 10px;
+}
+
+/* Documentation Section */
+.documentation-container {
+    max-width: 900px;
+    margin: 0 auto;
+    background: linear-gradient(to bottom, #e8e8e8, #c0c0c0);
+    border: 2px solid #000;
+    box-shadow:
+        inset 1px 1px 0 #fff,
+        inset -1px -1px 0 #808080,
+        4px 4px 0 rgba(0, 0, 0, 0.3);
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.documentation-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: linear-gradient(to bottom, #ff6600, #ff3300);
+    border-bottom: 2px solid #000;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.documentation-header h2 {
+    font-size: 18px;
+    color: #fff;
+    text-shadow: 1px 1px 0 #000;
+}
+
+.documentation-content {
+    padding: 20px;
+}
+
+.doc-section {
+    background: linear-gradient(to bottom, #f5f5f5, #e8e8e8);
+    border: 2px solid #000;
+    margin-bottom: 20px;
+    box-shadow:
+        inset 1px 1px 0 #fff,
+        inset -1px -1px 0 #a0a0a0,
+        2px 2px 0 rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+}
+
+.doc-section h3 {
+    background: linear-gradient(to bottom, #4a90d9, #357abd);
+    color: #fff;
+    padding: 10px 15px;
+    font-size: 16px;
+    text-shadow: 1px 1px 0 #000;
+    border-bottom: 2px solid #000;
+}
+
+.doc-subsection {
+    padding: 15px;
+    border-bottom: 1px dashed #a0a0a0;
+}
+
+.doc-subsection:last-child {
+    border-bottom: none;
+}
+
+.doc-subsection h4 {
+    font-size: 14px;
+    color: #cc0000;
+    margin-bottom: 10px;
+    text-shadow: 1px 1px 0 #fff;
+}
+
+.doc-subsection ul {
+    list-style: none;
+    padding-left: 10px;
+}
+
+.doc-subsection ul li {
+    padding: 5px 0;
+    font-size: 13px;
+}
+
+.doc-subsection ul li strong {
+    color: #0066cc;
+}
+
+.code-example {
+    background: #1a1a1a;
+    color: #00ff00;
+    padding: 15px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    border: 2px solid #000;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    box-shadow:
+        inset 1px 1px 0 #333,
+        inset -1px -1px 0 #000,
+        2px 2px 0 rgba(0, 0, 0, 0.3);
+}
+
+.doc-section ul {
+    list-style: disc;
+    padding-left: 25px;
+}
+
+.doc-section ul li {
+    padding: 5px 0;
+    font-size: 13px;
 }
 
 .creation-board-content {

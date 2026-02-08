@@ -235,7 +235,10 @@
                 <div class="creation-board-header">
                     <button class="back-button" onclick="hideCreationBoard()" data-translate="back">← Voltar</button>
                     <h2 data-translate="my-creation-studio">Meu Estúdio de Criação</h2>
-                    <button class="primary-button" onclick="createNewGame()" data-translate="create-new-game">Criar Novo Jogo</button>
+                    <div class="creation-actions">
+                        <button class="secondary-button" onclick="showDocumentation()" data-translate="documentation">Documentação</button>
+                        <button class="primary-button" onclick="createNewGame()" data-translate="create-new-game">Criar Novo Jogo</button>
+                    </div>
                 </div>
 
                 <div class="creation-board-content">
@@ -366,6 +369,206 @@
                         <div class="credit-item">
                             <h3>Graphic Designer</h3>
                             <p><a href="https://websim.com/@styron" target="_blank">styron</a> <span style="color: #808080; font-size: 12px;">go follow him hes a cool guy!</span></p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Documentation Section -->
+            <section id="documentation-section" class="hidden">
+                <div class="documentation-container">
+                    <div class="documentation-header">
+                        <button class="back-button" onclick="hideDocumentation()" data-translate="back">← Voltar</button>
+                        <h2 data-translate="documentation-title">Documentação do RoGold Studio</h2>
+                    </div>
+                    <div class="documentation-content">
+                        <div class="doc-section">
+                            <h3 data-translate="doc-studio-tools-title">Ferramentas do Studio</h3>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-toolbox-title">Toolbox</h4>
+                                <ul>
+                                    <li><strong>Select (Q)</strong> - <span data-translate="doc-select-desc">Selecione objetos no viewport</span></li>
+                                    <li><strong>Move (W)</strong> - <span data-translate="doc-move-desc">Mova objetos usando as setas coloridas (Vermelho=X, Verde=Y, Azul=Z)</span></li>
+                                    <li><strong>Rotate (R)</strong> - <span data-translate="doc-rotate-desc">Gire objetos usando os anéis coloridos</span></li>
+                                    <li><strong>Scale (E)</strong> - <span data-translate="doc-scale-desc">Dimensione objetos usando os círculos coloridos</span></li>
+                                    <li><strong>Part (T)</strong> - <span data-translate="doc-part-desc">Crie novas peças no workspace</span></li>
+                                    <li><strong>Sound</strong> - <span data-translate="doc-sound-desc">Adicione sons ao seu jogo</span></li>
+                                    <li><strong>Light</strong> - <span data-translate="doc-light-desc">Adicione fontes de luz (Point, Spot, Directional)</span></li>
+                                    <li><strong>Model</strong> - <span data-translate="doc-model-desc">Crie modelos para organizar objetos</span></li>
+                                    <li><strong>Script</strong> - <span data-translate="doc-script-desc">Adicione scripts Lua para dar vida ao seu jogo</span></li>
+                                    <li><strong>Folder</strong> - <span data-translate="doc-folder-desc">Pastas para organizar o Explorer</span></li>
+                                </ul>
+                            </div>
+                        </div>
+                        
+                        <div class="doc-section">
+                            <h3 data-translate="doc-properties-title">Propriedades dos Objetos</h3>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-basic-props-title">Propriedades Básicas</h4>
+                                <ul>
+                                    <li><strong>Name</strong> - <span data-translate="doc-name-desc">Nome do objeto (usado em scripts)</span></li>
+                                    <li><strong>Position</strong> - <span data-translate="doc-position-desc">Posição X, Y, Z do objeto no mundo</span></li>
+                                    <li><strong>Size</strong> - <span data-translate="doc-size-desc">Tamanho do objeto (X, Y, Z)</span></li>
+                                    <li><strong>Color</strong> - <span data-translate="doc-color-desc">Cor do objeto (RGB)</span></li>
+                                    <li><strong>Transparency</strong> - <span data-translate="doc-transparency-desc">Transparência (0-1)</span></li>
+                                </ul>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-physics-props-title">Propriedades de Física</h4>
+                                <ul>
+                                    <li><strong>Anchored</strong> - <span data-translate="doc-anchored-desc">Quando ativado, o objeto não se move com física</span></li>
+                                    <li><strong>Can Collide</strong> - <span data-translate="doc-cancollide-desc">Quando ativado, o objeto causa colisões</span></li>
+                                    <li><strong>Body Type</strong> - <span data-translate="doc-bodytype-desc">Dynamic (queda), Kinematic (movido por scripts), Static (fixo)</span></li>
+                                    <li><strong>Mass</strong> - <span data-translate="doc-mass-desc">Massa do objeto (afeta física)</span></li>
+                                    <li><strong>Friction</strong> - <span data-translate="doc-friction-desc">Atrito (0-1)</span></li>
+                                    <li><strong>Restitution</strong> - <span data-translate="doc-restitution-desc">Restituição/Quique (0-1)</span></li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="doc-section">
+                            <h3 data-translate="doc-lua-api-title">API Lua (O que funciona no jogo)</h3>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-basic-lua-title">Comandos Básicos</h4>
+                                <pre class="code-example">-- Acessar objetos
+workspace.NomeDoObjeto
+workspace:FindFirstChild("Nome")
+
+-- Propriedades
+objeto.Name = "NovoNome"
+objeto.Position = Vector3.new(0, 10, 0)
+objeto.Size = Vector3.new(4, 2, 2)
+objeto.Color = Color3.new(1, 0, 0) -- R, G, B (0-1)
+objeto.Transparency = 0.5
+objeto.Anchored = true
+objeto.CanCollide = true
+
+-- Destruir objetos
+objeto:Destroy()</pre>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-spin-title">Spin (Girar Parts)</h4>
+                                <pre class="code-example">-- Girar uma parte continuamente
+objeto.Spin() -- Gira no eixo Y por padrão
+objeto.Spin(Vector3.new(0, 1, 0)) -- Gira no eixo Y
+objeto.Spin(Vector3.new(1, 0, 0)) -- Gira no eixo X
+objeto.Spin(Vector3.new(0, 0, 1)) -- Gira no eixo Z</pre>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-print-title">Print/Debug</h4>
+                                <pre class="code-example">print("Mensagem no console")
+warn("Aviso")</pre>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-events-title">Eventos (Touched)</h4>
+                                <pre class="code-example">-- Conectar função ao evento Touched
+local function onTouched(part)
+    print("Colidiu com: " .. part.Name)
+end
+
+minhaParte.Touched:Connect(onTouched)</pre>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-math-title">Math e Vector3</h4>
+                                <pre class="code-example">-- Criar vetores
+local pos = Vector3.new(0, 10, 0)
+
+-- Use valores numéricos diretamente
+local randomValue = 5
+local floored = 5
+local ceiled = 6</pre>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-loops-title">Loops</h4>
+                                <pre class="code-example">-- Loop infinito (sempre use wait!)
+while true do
+    wait(1)
+    print("A cada segundo")
+end</pre>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-gui-title">GUI (Interfaces)</h4>
+                                <pre class="code-example">-- Criar ScreenGui
+local gui = Instance.new("ScreenGui")
+gui.Parent = game.PlayerGui
+
+-- Criar Frame
+local frame = Instance.new("Frame")
+frame.Parent = gui
+frame.Size = UDim2.new(0, 400, 0, 300)
+frame.Position = UDim2.new(0.5, -200, 0.5, -150)
+frame.BackgroundColor3 = Color3.new(0.2, 0.2, 0.2)
+
+-- Criar TextLabel
+local label = Instance.new("TextLabel")
+label.Parent = frame
+label.Size = UDim2.new(0.21, 0, 0, 60)
+label.Text = "Olá! Esta é uma GUI!"
+label.TextColor3 = Color3.new(1, 1, 1)
+label.TextSize = 24
+
+-- Criar TextButton
+local button = Instance.new("TextButton")
+button.Parent = frame
+button.Size = UDim2.new(0, 150, 0, 50)
+button.Position = UDim2.new(0.010, 0.1 ,0.1 , 0)
+button.Text = "Clique em mim!"
+button.TextColor3 = Color3.new(0, 0, 0)
+
+-- Conectar evento de clique
+button.MouseButton1Click:Connect(function()
+    print("Botão clicado!")
+    label.Text = "Você clicou!"
+    wait(2)
+    label.Text = "clique em mim!"
+end)</pre>
+                            </div>
+                        </div>
+
+                        <div class="doc-section">
+                            <h3 data-translate="doc-limitations-title">O que NÃO funciona</h3>
+                            <ul>
+                                <li>TweenService (animações smooth)</li>
+                                <li>Humanoid/Character (sistema de personagens)</li>
+                                <li>CFrame:Rotate() ou CFrame completo</li>
+                                <li>SetPrimaryPartCFrame()</li>
+                                <li>RespawnLocation</li>
+                                <li>spawn() e delay() functions</li>
+                                <li>Eventos: ChildAdded, Changed (apenas Touched funciona)</li>
+                            </ul>
+                        </div>
+
+                        <div class="doc-section">
+                            <h3 data-translate="doc-gameplay-title">Gameplay no Jogo</h3>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-player-title">Controles do Jogador</h4>
+                                <ul>
+                                    <li><strong>WASD</strong> - <span data-translate="doc-walk-desc">Mover personagem</span></li>
+                                    <li><strong>Space</strong> - <span data-translate="doc-jump-desc">Pular</span></li>
+                                    <li><strong>Mouse</strong> - <span data-translate="doc-look-desc">Olhar ao redor</span></li>
+                                    <li><strong>Click</strong> - <span data-translate="doc-click-desc">Interagir com partes (clique esquerdo)</span></li>
+                                    <li><strong>Q/E</strong> - <span data-translate="doc-fly-desc">Descer/Subir (modo fly)</span></li>
+                                </ul>
+                            </div>
+                            <div class="doc-subsection">
+                                <h4 data-translate="doc-physics-game-title">Física no Jogo</h4>
+                                <ul>
+                                    <li><span data-translate="doc-gravity-desc">Gravidade: -196.2 studs/s²</span></li>
+                                    <li><span data-translate="doc-respawn-desc">Respawn automático se cair do mapa</span></li>
+                                    <li><span data-translate="doc-fall-desc">Partes não anchored caem e colidem</span></li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="doc-section">
+                            <h3 data-translate="doc-limitations-title">O que NÃO funciona</h3>
+                            <ul>
+                                <li data-translate="doc-limit-1">Scripts só executam quando o jogo é iniciado (Test ou Publish)</li>
+                                <li data-translate="doc-limit-2">Não use loops infinitos sem wait() - o jogo vai travar</li>
+                                <li data-translate="doc-limit-3">TweenService, Humanoid, CFrame completo não funcionam</li>
+                                <li data-translate="doc-limit-4">Sounds precisam de URL válida (MP3/WAV)</li>
+                                <li data-translate="doc-limit-5">GLTF models precisam ser .glb ou .gltf com URL pública</li>
+                            </ul>
                         </div>
                     </div>
                 </div>

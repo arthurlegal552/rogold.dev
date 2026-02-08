@@ -331,6 +331,10 @@ let dragStartPos = new THREE.Vector2();
 let dragPlane = new THREE.Plane();
 let transformMode = null; // 'move', 'rotate', or 'scale'
 
+// Selection context menu
+let lastClickedObject = null;
+let selectionContextMenu = null;
+
 // Transformation gizmos
 let moveGizmo = null;
 let rotateGizmo = null;
@@ -386,6 +390,17 @@ let RobloxEnvironment = {
 document.addEventListener('DOMContentLoaded', () => {
     initStudio();
     setupEventListeners();
+    initSelectionContextMenu();
+});
+
+// Prevent default context menu only on the viewport canvas (loads immediately)
+document.addEventListener('contextmenu', (event) => {
+    const canvas = document.getElementById('viewport-canvas');
+    if (canvas && canvas.contains(event.target)) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    // Outside the canvas, the default browser menu is allowed
 });
 
 function initializeRobloxEnvironment() {
@@ -752,8 +767,129 @@ function setupViewportInteraction() {
             }
             updateGizmoVisibility();
             updatePropertiesPanel();
+            
+            // Show context menu for already selected objects on right-click (button 2)
+            if (event.button === 2 && selectedObjects.has(selectedObject)) {
+                showSelectionContextMenu(event, selectedObject);
+            }
         } else if (!event.shiftKey) {
             // Only clear selection if not holding Shift and clicking empty space
+            clearObjectSelection();
+            hideSelectionContextMenu();
+        }
+    });
+
+    canvas.addEventListener('mousemove', (event) => {
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        // Update placement preview if placing parts
+        if (isPlacingPart) {
+            updatePlacementPreview();
+        }
+    });
+
+    // Document listeners will be added dynamically during dragging
+
+    canvas.addEventListener('click', (event) => {
+        if (isPlacingPart && placementPreview && placementPreview.visible) {
+            placePartAtMouse();
+        }
+    });
+
+    // Update selection on mousedown (without showing context menu here)
+    canvas.addEventListener('mousedown', (event) => {
+        // Hide context menu on mousedown
+        hideSelectionContextMenu();
+        
+        // Prevent camera movement during any interaction
+        event.preventDefault();
+        event.stopPropagation();
+    });
+
+    // Selection handling for left-click (moved from mousedown)
+    canvas.addEventListener('mousedown', (event) => {
+        // Hide context menu on mousedown
+        hideSelectionContextMenu();
+        
+        // Prevent camera movement during any interaction
+        event.preventDefault();
+        event.stopPropagation();
+
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        // Check for gizmo interaction first
+        raycaster.setFromCamera(mouse, camera);
+        const validHandles = gizmoHandles.filter(h => h && h.handle && transformMode && h.type === transformMode).map(h => h.handle);
+        const gizmoIntersects = raycaster.intersectObjects(validHandles, true);
+
+        if (gizmoIntersects.length > 0) {
+            const gizmoHandle = gizmoIntersects[0].object;
+            const handleData = gizmoHandles.find(h => h.handle === gizmoHandle);
+            if (handleData) {
+                startGizmoDrag(handleData, event);
+                return;
+            }
+        }
+
+        // Check for object selection
+        const intersects = raycaster.intersectObjects(scene.children, true);
+        let selectedObject = null;
+
+        for (const intersect of intersects) {
+            let obj = intersect.object;
+            while (obj.parent && obj.parent !== scene) {
+                obj = obj.parent;
+            }
+
+            // Skip gizmos
+            if (obj === moveGizmo) continue;
+
+            // Check if this is one of our luaObjects
+            for (const [name, luaObj] of Object.entries(luaObjects)) {
+                if (luaObj.threeObject === obj) {
+                    selectedObject = luaObj;
+                    break;
+                }
+            }
+            if (selectedObject) break;
+        }
+
+        if (selectedObject) {
+            // Handle multi-selection with Shift key
+            if (event.shiftKey) {
+                if (selectedObjects.has(selectedObject)) {
+                    selectedObjects.delete(selectedObject);
+                    if (selectedObject.threeObject) {
+                        selectedObject.threeObject.material.emissive = new THREE.Color(0x000000);
+                    }
+                    addOutput(`Removed ${selectedObject.Name} from selection`, 'info');
+                } else {
+                    if (selectedObject.Name !== 'SpawnPoint') {
+                        selectedObjects.add(selectedObject);
+                        if (selectedObject.threeObject) {
+                            selectedObject.threeObject.material.emissive = new THREE.Color(0x444400);
+                        }
+                    }
+                    addOutput(`Added ${selectedObject.Name} to selection`, 'info');
+                }
+            } else {
+                // Single selection
+                clearObjectSelection();
+                if (selectedObject.Name !== 'SpawnPoint') {
+                    selectedObjects.add(selectedObject);
+                    if (selectedObject.threeObject) {
+                        selectedObject.threeObject.material.emissive = new THREE.Color(0x444400);
+                    }
+                    addOutput(`Selected ${selectedObject.Name}`, 'success');
+                }
+            }
+            updateGizmoVisibility();
+            updatePropertiesPanel();
+        } else if (!event.shiftKey) {
             clearObjectSelection();
         }
     });
@@ -777,11 +913,101 @@ function setupViewportInteraction() {
         }
     });
 
-    // Prevent context menu during interactions
+    // Show our custom context menu on right-click for selected objects
     canvas.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
+        
+        // Check if we right-clicked on a selected object
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(scene.children, true);
+        
+        for (const intersect of intersects) {
+            let obj = intersect.object;
+            while (obj.parent && obj.parent !== scene) {
+                obj = obj.parent;
+            }
+            
+            for (const [name, luaObj] of Object.entries(luaObjects)) {
+                if (luaObj.threeObject === obj && selectedObjects.has(luaObj)) {
+                    showSelectionContextMenu(event, luaObj);
+                    return;
+                }
+            }
+        }
+        
+        // Hide menu if right-clicking elsewhere
+        hideSelectionContextMenu();
     });
+}
+
+// Selection Context Menu Functions
+function initSelectionContextMenu() {
+    selectionContextMenu = document.getElementById('selection-context-menu');
+    if (!selectionContextMenu) return;
+
+    // Duplicate item click handler
+    const duplicateItem = document.getElementById('context-duplicate');
+    if (duplicateItem) {
+        duplicateItem.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (lastClickedObject && selectedObjects.has(lastClickedObject)) {
+                duplicateSelection();
+            }
+            hideSelectionContextMenu();
+        });
+    }
+
+    // Delete item click handler
+    const deleteItem = document.getElementById('context-delete');
+    if (deleteItem) {
+        deleteItem.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (lastClickedObject && selectedObjects.has(lastClickedObject)) {
+                deleteSelectedObjects();
+            }
+            hideSelectionContextMenu();
+        });
+    }
+
+    // Hide menu when clicking elsewhere (but not on the menu itself)
+    document.addEventListener('mousedown', (e) => {
+        if (selectionContextMenu && !selectionContextMenu.contains(e.target)) {
+            hideSelectionContextMenu();
+        }
+    });
+
+    console.log('Selection context menu initialized');
+}
+
+function showSelectionContextMenu(event, object) {
+    if (!selectionContextMenu) return;
+    
+    // Toggle menu if clicking on the same object
+    if (lastClickedObject === object && selectionContextMenu.style.display === 'block') {
+        hideSelectionContextMenu();
+        return;
+    }
+    
+    lastClickedObject = object;
+    
+    // Position menu at mouse location
+    selectionContextMenu.style.display = 'block';
+    selectionContextMenu.style.left = event.clientX + 'px';
+    selectionContextMenu.style.top = event.clientY + 'px';
+    
+    console.log('Selection context menu shown for:', object?.Name);
+}
+
+function hideSelectionContextMenu() {
+    if (selectionContextMenu) {
+        selectionContextMenu.style.display = 'none';
+    }
+    lastClickedObject = null;
 }
 
 function createBaseplate() {
