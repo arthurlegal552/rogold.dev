@@ -7252,7 +7252,10 @@ function updateFaceSelector() {
     const allFaces = {
         'imgs/OriginalGlitchedFace.webp': 'Classic',
         'imgs/epicface.png': 'Epic',
-        'imgs/daniel.png': 'Daniel'
+        'imgs/daniel.png': 'Daniel',
+        'imgs/smirk.png': 'Smirk',
+        'imgs/face.png': 'Confidence',
+        'imgs/dum.png': 'Dum'
     };
 
     // Add owned faces to selector

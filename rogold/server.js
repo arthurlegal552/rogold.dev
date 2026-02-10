@@ -709,6 +709,19 @@ io.on('connection', (socket) => {
             socket.disconnect();
             return;
         }
+        
+        // Increment visits only once per session when first player joins
+        const gameId = roomName;
+        if (gameId && gameId !== 'default' && !socket.visitsIncremented) {
+            socket.visitsIncremented = true;
+            // Increment visits in background (don't await)
+            updateGameVisits(gameId, 1).then(() => {
+                console.log(`Visit incremented for game ${gameId}`);
+            }).catch(err => {
+                console.error('Error incrementing visits:', err);
+            });
+        }
+
         // Marca nickname como ativo
         activeNicknames[socket.id] = nickname;
         socket.nickname = nickname;

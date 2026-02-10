@@ -6788,17 +6788,80 @@ async function saveAllAlterations() {
                 addOutput(`Failed to save alterations: ${error}`, 'error');
             }
         } else {
-            // Save as local project file
-            const blob = new Blob([JSON.stringify(gameData, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
+            // Save as new game on server with reward (reward given when game reaches 5 visits)
+            showPublishProgress('Publishing new game to server...');
+            
+            const CREATE_GAME_REWARD = 200;
+            const VISITS_REQUIRED_FOR_REWARD = 5;
+            const currentUser = localStorage.getItem('rogold_currentUser');
+            
+            const response = await fetch('/api/games', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    ...gameData,
+                    title: gameData.title || 'Untitled Game',
+                    gameId: 'game_' + Date.now(),
+                    creator_id: currentUser,
+                    likes: 0,
+                    dislikes: 0,
+                    visits: 0,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                })
+            });
 
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `rogold_alterations_${Date.now()}.json`;
-            a.click();
+            hidePublishProgress();
 
-            URL.revokeObjectURL(url);
-            addOutput('All alterations saved as local file!', 'success');
+            if (response.ok) {
+                const result = await response.json();
+                addOutput('New game published successfully!', 'success');
+                
+                // Add game to pending rewards list (reward given when game reaches 5 visits)
+                if (currentUser) {
+                    try {
+                        let profileData = JSON.parse(localStorage.getItem('rogold_profiles') || '{}');
+                        // Create profile if it doesn't exist
+                        if (!profileData[currentUser]) {
+                            profileData[currentUser] = {
+                                bio: 'Este usuário ainda não escreveu uma descrição.',
+                                status: 'Offline',
+                                favorites: [],
+                                profilePicture: null,
+                                coins: 500,
+                                inventory: [],
+                                equippedItems: {},
+                                ratings: {},
+                                rewardedLikes: [],
+                                rewardedCreates: [],
+                                pendingCreateRewards: [],
+                                joinDate: new Date().toISOString()
+                            };
+                        }
+                        // Add game to pending rewards
+                        profileData[currentUser].pendingCreateRewards = profileData[currentUser].pendingCreateRewards || [];
+                        profileData[currentUser].pendingCreateRewards.push({
+                            gameId: result.gameId,
+                            title: gameData.title || 'Untitled Game',
+                            visitsNeeded: VISITS_REQUIRED_FOR_REWARD
+                        });
+                        localStorage.setItem('rogold_profiles', JSON.stringify(profileData));
+                        addOutput(`Jogo publicado! Você ganhou ${CREATE_GAME_REWARD} Goldbucks quando seu jogo atingir ${VISITS_REQUIRED_FOR_REWARD} visitas!`, 'success');
+                    } catch (e) {
+                        console.error('Error adding to pending rewards:', e);
+                    }
+                }
+                
+                // Update URL with new game ID without reloading
+                const newUrl = `studio.html?game=${encodeURIComponent(result.gameId)}`;
+                window.history.pushState({path: newUrl}, '', newUrl);
+                addOutput(`Game published with ID: ${result.gameId}`, 'info');
+            } else {
+                const error = await response.text();
+                addOutput(`Failed to publish game: ${error}`, 'error');
+            }
         }
     } catch (error) {
         hidePublishProgress();

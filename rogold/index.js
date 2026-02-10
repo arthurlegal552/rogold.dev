@@ -96,6 +96,34 @@ class UserManager {
         } catch (e) {
             // Ignore migration errors
         }
+        
+        // Clear old shared rating data from localStorage (migrated to per-user profile ratings)
+        this.migrateOldRatings();
+    }
+    
+    migrateOldRatings() {
+        try {
+            // Check if old rating migration has been done
+            const ratingsMigrated = localStorage.getItem('rogold_ratings_migrated');
+            if (ratingsMigrated) return;
+            
+            // Find and remove old shared rating entries
+            let count = 0;
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('rating_')) {
+                    localStorage.removeItem(key);
+                    count++;
+                }
+            }
+            if (count > 0) {
+                console.log(`Cleared ${count} old shared rating entries`);
+            }
+            // Mark migration as done
+            localStorage.setItem('rogold_ratings_migrated', 'true');
+        } catch (e) {
+            console.warn('Error migrating old ratings:', e);
+        }
     }
 
     async register(username, password) {
@@ -246,6 +274,9 @@ class CatalogManager {
             // Face items
             { id: 'face_default', name: 'Default Face', type: 'face', price: 0, imageUrl: 'imgs/OriginalGlitchedFace.webp', modelPath: null, description: 'O rosto padrão clássico do Roblox. Simples, confiável e sempre reconhecível.' },
             { id: 'face_epic', name: 'Epic Face', type: 'face', price: 100, imageUrl: 'imgs/epicface.png', modelPath: null, description: 'Um rosto épico com expressões dinâmicas. Mostre sua personalidade única no mundo dos jogos!' },
+            { id: 'face_smirk', name: 'Smirk', type: 'face', price: 150, imageUrl: 'imgs/smirk.png', modelPath: null, description: 'A sly smirk that says you know something others don\'t. Perfect for the cunning player.' },
+            { id: 'face_confidence', name: 'Confidence', type: 'face', price: 200, imageUrl: 'imgs/face.png', modelPath: null, description: 'A confident expression that shows you mean business. Wear it with pride!' },
+            { id: 'face_dum', name: 'Dum', type: 'face', price: 50, imageUrl: 'imgs/dum.png', modelPath: null, description: 'The classic dum face. Sometimes being silly is the best strategy!' },
             // Gear items
             { id: 'gear_rocket_launcher', name: 'Lançador de Foguetes', type: 'gear', price: 300, imageUrl: 'imgs/launcher.jpg', modelPath: 'roblox_classic_rocket_launcher.glb', description: 'Um lançador de foguetes clássico do Roblox. Permite disparar foguetes explosivos em todos os jogos!' }
         ]
@@ -305,7 +336,11 @@ class ProfileManager {
             coins: 500,
             inventory: [],
             equippedItems: {},
-            ratings: {} // gameId: 'like' or 'dislike' or undefined
+            ratings: {}, // gameId: 'like' or 'dislike' or undefined
+            rewardedLikes: [], // games that user has received like reward for
+            rewardedCreates: [], // games that user has received create reward for
+            pendingCreateRewards: [], // games pending create reward (needs 5 visits)
+            joinDate: new Date().toISOString()
         };
 
         // Merge existing profile data with default values to ensure all fields are present.
@@ -838,6 +873,12 @@ function createPlayer(headModel) {
     let faceTexturePath = 'imgs/OriginalGlitchedFace.webp';
     if (faceId === 'face_epic') {
         faceTexturePath = 'imgs/epicface.png';
+    } else if (faceId === 'face_smirk') {
+        faceTexturePath = 'imgs/smirk.png';
+    } else if (faceId === 'face_confidence') {
+        faceTexturePath = 'imgs/face.png';
+    } else if (faceId === 'face_dum') {
+        faceTexturePath = 'imgs/dum.png';
     }
     const faceTexture = faceTextureLoader.load(faceTexturePath);
     faceTexture.minFilter = THREE.NearestFilter;
@@ -1154,7 +1195,10 @@ async function handleCatalogAction(itemId, itemType, action) {
                         let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["imgs/OriginalGlitchedFace.webp"]');
                         const faceMapping = {
                             'face_default': 'imgs/OriginalGlitchedFace.webp',
-                            'face_epic': 'imgs/epicface.png'
+                            'face_epic': 'imgs/epicface.png',
+                            'face_smirk': 'imgs/smirk.png',
+                            'face_confidence': 'imgs/face.png',
+                            'face_dum': 'imgs/dum.png'
                         };
                         const faceFile = faceMapping[item.id];
                         if (faceFile && !ownedFaces.includes(faceFile)) {
@@ -1201,7 +1245,10 @@ async function handleCatalogAction(itemId, itemType, action) {
             if (item.type === 'face') {
                 const faceMapping = {
                     'face_default': 'imgs/OriginalGlitchedFace.webp',
-                    'face_epic': 'imgs/epicface.png'
+                    'face_epic': 'imgs/epicface.png',
+                    'face_smirk': 'imgs/smirk.png',
+                    'face_confidence': 'imgs/face.png',
+                    'face_dum': 'imgs/dum.png'
                 };
                 const faceFile = faceMapping[item.id];
                 if (faceFile) {
@@ -1579,7 +1626,134 @@ function hideCommunity() {
     }, 300);
 }
 
+// Rewards Section
+function showRewards() {
+    const rewardsSection = document.getElementById('rewards-section');
+    const currentUser = userManager.getCurrentUser();
+    
+    // Hide other sections
+    hideSection(document.getElementById('featured-games'));
+    hideSection(document.querySelector('.banner'));
+    hideSection(document.getElementById('profile-section'));
+    hideSection(document.getElementById('community-section'));
+    hideSection(document.getElementById('catalog-section'));
+    hideSection(document.getElementById('item-detail-section'));
+    hideSection(document.getElementById('game-detail-section'));
+    hideSection(document.getElementById('blog-list'));
+    showOnlyAuthSection('');
+    
+    // Show rewards section
+    showSection(rewardsSection);
+    setActiveNavLink('rewards-link');
+    
+    // Update rewards display
+    updateRewardsDisplay();
+}
 
+function hideRewardsSection() {
+    hideSection(document.getElementById('rewards-section'));
+    showMainContent();
+    showOnlyAuthSection('');
+}
+
+function updateRewardsDisplay() {
+    const currentUser = userManager.getCurrentUser();
+    
+    if (!currentUser) {
+        document.getElementById('rewards-earned').textContent = '0';
+        document.getElementById('rewards-total').textContent = '?';
+        document.getElementById('games-created-count').textContent = '0';
+        return;
+    }
+    
+    const profile = profileManager.getProfile(currentUser);
+    
+    // Count rewarded likes
+    const rewardedLikesCount = profile.rewardedLikes?.length || 0;
+    document.getElementById('rewards-earned').textContent = rewardedLikesCount;
+    
+    // Get total games available
+    fetch('/api/games')
+        .then(response => response.json())
+        .then(data => {
+            const totalGames = data.games?.length || 0;
+            document.getElementById('rewards-total').textContent = totalGames;
+        })
+        .catch(() => {
+            document.getElementById('rewards-total').textContent = '?';
+        });
+    
+    // Count games created by user
+    fetch(`/api/user/${encodeURIComponent(currentUser)}/games`)
+        .then(response => response.json())
+        .then(data => {
+            const gamesCreated = data.games?.length || 0;
+            document.getElementById('games-created-count').textContent = gamesCreated;
+        })
+        .catch(() => {
+            document.getElementById('games-created-count').textContent = '0';
+        });
+}
+
+// Check if a game has reached 5 visits and award creator reward
+async function checkCreatorReward(gameId, visits) {
+    const VISITS_REQUIRED = 5;
+    
+    if (visits < VISITS_REQUIRED) return;
+    
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) return;
+    
+    const profile = profileManager.getProfile(currentUser);
+    const pendingRewards = profile.pendingCreateRewards || [];
+    
+    // Find if this game is in pending rewards
+    const pendingIndex = pendingRewards.findIndex(p => p.gameId === gameId);
+    if (pendingIndex === -1) return; // Not in pending or already rewarded
+    
+    const pendingReward = pendingRewards[pendingIndex];
+    
+    // Check if we need to award based on visit threshold
+    if (visits >= VISITS_REQUIRED && !pendingReward.rewardAwarded) {
+        // Award the reward
+        const CREATE_GAME_REWARD = 200;
+        
+        profile.coins = (profile.coins || 0) + CREATE_GAME_REWARD;
+        pendingReward.rewardAwarded = true;
+        pendingReward.rewardedAt = new Date().toISOString();
+        
+        // Move to rewarded creates
+        profile.rewardedCreates = profile.rewardedCreates || [];
+        profile.rewardedCreates.push({
+            gameId: pendingReward.gameId,
+            title: pendingReward.title,
+            rewardedAt: pendingReward.rewardedAt
+        });
+        
+        // Remove from pending
+        profile.pendingCreateRewards.splice(pendingIndex, 1);
+        
+        profileManager.updateProfile(currentUser, {
+            coins: profile.coins,
+            rewardedCreates: profile.rewardedCreates,
+            pendingCreateRewards: profile.pendingCreateRewards
+        });
+        
+        updateUserCoinsDisplay();
+        const visitsMessage = tGet('reward-create-visits', 'Seu jogo atingiu ${visits} visitas!').replace('${visits}', VISITS_REQUIRED);
+        await showRewardModal(
+            visitsMessage,
+            tGet('reward-title', '🏆 Recompensa!'),
+            pendingReward.title
+        );
+        console.log(`Creator reward awarded for game ${gameId}: ${CREATE_GAME_REWARD} Goldbucks`);
+    }
+}
+
+// Make functions globally available
+window.showRewards = showRewards;
+window.hideRewardsSection = hideRewardsSection;
+window.checkCreatorReward = checkCreatorReward;
 
 
 
@@ -2078,6 +2252,12 @@ document.getElementById('games-link')?.addEventListener('click', function(e) {
     }
 });
 
+// NEW: Event listener for "Rewards" link
+document.getElementById('rewards-link')?.addEventListener('click', function(e) {
+    e.preventDefault();
+    showRewards();
+});
+
 document.getElementById('switch-to-register-inline')?.addEventListener('click', openRegisterModal);
 document.getElementById('switch-to-login-inline')?.addEventListener('click', openLoginModal);
 document.getElementById('close-settings-inline')?.addEventListener('click', hideCurrentAuthFormAndShowMainContent);
@@ -2280,11 +2460,16 @@ async function loadPublishedGames(category = 'all') {
                     <img src="${thumbnailSrc}" alt="${escapeHtml(game.title || 'Untitled Game')} Thumbnail" onerror="this.src='imgs/thumbnail1.jpg'">
                 </div>
                 <h4>${escapeHtml(game.title || 'Untitled Game')}</h4>
+                <div class="game-stats">
+                    <span class="likes-count">${game.likes || 0}</span> <span data-translate="likes">${tGet('likes', 'curtidas')}</span>
+                    <span class="dislikes-count">${game.dislikes || 0}</span> <span data-translate="dislikes">${tGet('dislikes', 'não curtidas')}</span>
+                </div>
                 <div class="game-actions">
-                    <button class="play-button" data-game-id="${escapeHtml(game.id)}">Jogar</button>
-                    <button class="favorite-toggle-button" data-game-title="${escapeHtml(game.title || 'Untitled Game')}">Favoritar</button>
+                    <button class="play-button" data-game-id="${escapeHtml(game.id)}">${tGet('play', 'Jogar')}</button>
+                    <button class="favorite-toggle-button" data-game-title="${escapeHtml(game.title || 'Untitled Game')}">${tGet('favorite', 'Favoritar')}</button>
                 </div>
             `;
+            
             gameCard.onclick = (e) => {
                 if (e.target.tagName === 'BUTTON') return;
                 viewGameDetails(game.id);
@@ -2427,6 +2612,9 @@ async function loadGameDetailSection() {
         }).then(data => {
             if (data && data.visits !== undefined) {
                 document.getElementById('game-detail-visits').textContent = data.visits;
+                
+                // Check if game is eligible for creator reward
+                checkCreatorReward(currentGameDetailId, data.visits);
             }
         }).catch(error => {
             console.error('Error incrementing visits:', error);
@@ -2437,8 +2625,14 @@ async function loadGameDetailSection() {
         const toolsAllowedText = currentGameDetailData.toolsAllowed === true ? (t['tools-yes'] || 'Sim') : (t['tools-no'] || 'Não');
         if (gameDetailToolsAllowed) gameDetailToolsAllowed.textContent = toolsAllowedText;
 
-        // Check user rating
-        currentGameDetailRating = localStorage.getItem(`rating_${currentGameDetailId}`);
+        // Check user rating - use profile ratings per user
+        const currentUser = userManager.getCurrentUser();
+        if (currentUser) {
+            const profile = profileManager.getProfile(currentUser);
+            currentGameDetailRating = profile.ratings[currentGameDetailId] || null;
+        } else {
+            currentGameDetailRating = null;
+        }
         updateGameDetailRatingButtons();
 
     } catch (error) {
@@ -2465,22 +2659,51 @@ function updateGameDetailRatingButtons() {
 async function rateGameDetail(action) {
     if (!currentGameDetailData) return;
 
+    const currentUser = userManager.getCurrentUser();
+    if (!currentUser) {
+        await alert('Você precisa estar logado para avaliar jogos.');
+        return;
+    }
+
+    const profile = profileManager.getProfile(currentUser);
+    const previousRating = currentGameDetailRating;
+    
     let newAction = action;
-    if (currentGameDetailRating === action) {
+    let shouldAwardReward = false;
+    
+    if (previousRating === action) {
         // Remove rating
         newAction = action === 'like' ? 'remove_like' : 'remove_dislike';
-        localStorage.removeItem(`rating_${currentGameDetailId}`);
         currentGameDetailRating = null;
-    } else if (currentGameDetailRating && currentGameDetailRating !== action) {
+        delete profile.ratings[currentGameDetailId];
+    } else if (previousRating && previousRating !== action) {
         // Change rating
         newAction = action === 'like' ? 'change_to_like' : 'change_to_dislike';
-        localStorage.setItem(`rating_${currentGameDetailId}`, action);
         currentGameDetailRating = action;
+        profile.ratings[currentGameDetailId] = action;
+        // Award reward only if liking for first time ever (not re-liking)
+        if (action === 'like' && !profile.rewardedLikes?.includes(currentGameDetailId)) {
+            shouldAwardReward = true;
+            profile.rewardedLikes = profile.rewardedLikes || [];
+            profile.rewardedLikes.push(currentGameDetailId);
+        }
     } else {
         // New rating
-        localStorage.setItem(`rating_${currentGameDetailId}`, action);
         currentGameDetailRating = action;
+        profile.ratings[currentGameDetailId] = action;
+        // Award reward only if liking for first time ever
+        if (action === 'like' && !profile.rewardedLikes?.includes(currentGameDetailId)) {
+            shouldAwardReward = true;
+            profile.rewardedLikes = profile.rewardedLikes || [];
+            profile.rewardedLikes.push(currentGameDetailId);
+        }
     }
+
+    // Save updated profile
+    profileManager.updateProfile(currentUser, { 
+        ratings: profile.ratings,
+        rewardedLikes: profile.rewardedLikes || []
+    });
 
     try {
         const response = await fetch(`/api/games/${encodeURIComponent(currentGameDetailId)}/rate`, {
@@ -2496,6 +2719,20 @@ async function rateGameDetail(action) {
             document.getElementById('game-detail-likes').textContent = result.likes;
             document.getElementById('game-detail-dislikes').textContent = result.dislikes;
             updateGameDetailRatingButtons();
+            
+            // Award goldbucks for first-time like
+            if (shouldAwardReward) {
+                const LIKE_REWARD = 50;
+                profileManager.addCoins(currentUser, LIKE_REWARD);
+                updateUserCoinsDisplay();
+                const gameTitle = currentGameDetailData?.title || '';
+                const likeThanks = gameTitle ? `Obrigado por curtir "${gameTitle}"!` : tGet('reward-like-thanks', 'Obrigado por curtir!');
+                await showRewardModal(
+                    likeThanks,
+                    `+${LIKE_REWARD} Goldbucks`
+                );
+            }
+            
             // Update the main games grid if visible
             loadPublishedGames();
         } else {
@@ -2503,6 +2740,10 @@ async function rateGameDetail(action) {
         }
     } catch (error) {
         console.error('Error rating game:', error);
+        // Revert profile on error
+        profile.ratings[currentGameDetailId] = previousRating;
+        profileManager.updateProfile(currentUser, { ratings: profile.ratings });
+        currentGameDetailRating = previousRating;
     }
 }
 
@@ -2675,7 +2916,10 @@ document.addEventListener('DOMContentLoaded', function() {
                             let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["imgs/OriginalGlitchedFace.webp"]');
                             const faceMapping = {
                                 'face_default': 'imgs/OriginalGlitchedFace.webp',
-                                'face_epic': 'imgs/epicface.png'
+                                'face_epic': 'imgs/epicface.png',
+                                'face_smirk': 'imgs/smirk.png',
+                                'face_confidence': 'imgs/face.png',
+                                'face_dum': 'imgs/dum.png'
                             };
                             const faceFile = faceMapping[item.id];
                             if (faceFile && !ownedFaces.includes(faceFile)) {
@@ -2708,7 +2952,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (item.type === 'face') {
                     const faceMapping = {
                         'face_default': 'imgs/OriginalGlitchedFace.webp',
-                        'face_epic': 'imgs/epicface.png'
+                        'face_epic': 'imgs/epicface.png',
+                        'face_smirk': 'imgs/smirk.png',
+                        'face_confidence': 'imgs/face.png',
+                        'face_dum': 'imgs/dum.png'
                     };
                     const faceFile = faceMapping[item.id];
                     if (faceFile) {
@@ -2820,15 +3067,28 @@ document.addEventListener('DOMContentLoaded', function() {
             const currentRating = profile.ratings[gameId];
 
             let action, newRating;
+            let shouldAwardReward = false;
             if (currentRating === 'like') {
                 action = 'remove_like';
                 newRating = undefined;
             } else if (currentRating === 'dislike') {
                 action = 'change_to_like';
                 newRating = 'like';
+                // Award reward only if liking for first time ever
+                if (!profile.rewardedLikes?.includes(gameId)) {
+                    shouldAwardReward = true;
+                    profile.rewardedLikes = profile.rewardedLikes || [];
+                    profile.rewardedLikes.push(gameId);
+                }
             } else {
                 action = 'like';
                 newRating = 'like';
+                // Award reward only if liking for first time ever
+                if (!profile.rewardedLikes?.includes(gameId)) {
+                    shouldAwardReward = true;
+                    profile.rewardedLikes = profile.rewardedLikes || [];
+                    profile.rewardedLikes.push(gameId);
+                }
             }
 
             try {
@@ -2857,7 +3117,20 @@ document.addEventListener('DOMContentLoaded', function() {
                     } else {
                         profile.ratings[gameId] = newRating;
                     }
-                    profileManager.updateProfile(currentUser, { ratings: profile.ratings });
+                    profileManager.updateProfile(currentUser, { 
+                        ratings: profile.ratings,
+                        rewardedLikes: profile.rewardedLikes || []
+                    });
+                    // Award goldbucks for first-time like
+                    if (shouldAwardReward) {
+                        const LIKE_REWARD = 50;
+                        profileManager.addCoins(currentUser, LIKE_REWARD);
+                        updateUserCoinsDisplay();
+                        await showRewardModal(
+                            tGet('reward-like-thanks', 'Obrigado por curtir!'),
+                            `+${LIKE_REWARD} Goldbucks`
+                        );
+                    }
                     // Update main games grid if visible
                     loadPublishedGames();
                 } else {
@@ -2969,7 +3242,10 @@ document.addEventListener('DOMContentLoaded', function() {
                             let ownedFaces = JSON.parse(localStorage.getItem('rogold_owned_faces') || '["OriginalGlitchedFace.webp"]');
                             const faceMapping = {
                                 'face_default': 'OriginalGlitchedFace.webp',
-                                'face_epic': 'epicface.png'
+                                'face_epic': 'epicface.png',
+                                'face_smirk': 'smirk.png',
+                                'face_confidence': 'face.png',
+                                'face_dum': 'dum.png'
                             };
                             const faceFile = faceMapping[item.id];
                             if (faceFile && !ownedFaces.includes(faceFile)) {
@@ -3003,7 +3279,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (item.type === 'face') {
                     const faceMapping = {
                         'face_default': 'OriginalGlitchedFace.webp',
-                        'face_epic': 'epicface.png'
+                        'face_epic': 'epicface.png',
+                        'face_smirk': 'smirk.png',
+                        'face_confidence': 'face.png',
+                        'face_dum': 'dum.png'
                     };
                     const faceFile = faceMapping[item.id];
                     if (faceFile) {
@@ -3402,7 +3681,14 @@ function startCoinRewardTimer() {
         const userNow = userManager.getCurrentUser();
         if (userNow) {
             profileManager.addCoins(userNow, COIN_REWARD_AMOUNT);
-            await alert(`Parabéns, ${userNow}! Você ganhou ${COIN_REWARD_AMOUNT} Goldbucks por passar tempo no Rogold!`);
+            // Use existing translation key for coins reward
+            const coinsRewardText = tGet('warning-coins-reward', 'Parabéns, ${username}! Você ganhou ${coins} Goldbucks por passar tempo no Rogold!')
+                .replace('${username}', userNow)
+                .replace('${coins}', COIN_REWARD_AMOUNT);
+            await showRewardModal(
+                coinsRewardText,
+                tGet('reward-title', '🏆 Recompensa!')
+            );
             // Update UI if the user navigates back to a relevant page after the alert
             updateUserCoinsDisplay();
         } else {
@@ -3487,6 +3773,41 @@ function showAlert(message, title = null) {
         
         document.getElementById('rogold-modal-ok').onclick = () => {
             modal.classList.add('hidden');
+            resolve();
+        };
+    });
+}
+
+// Show a reward modal with gold theme
+function showRewardModal(message, title = null, gameTitle = null) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('rogold-modal');
+        const modalTitle = document.getElementById('rogold-modal-title');
+        const modalBody = document.getElementById('rogold-modal-body');
+        const modalFooter = document.getElementById('rogold-modal-footer');
+        
+        // Get translated button
+        const okText = tGet('ok', 'OK');
+        const rewardTitle = title || tGet('reward-title', '🏆 Recompensa!');
+        
+        // Add reward class for gold styling
+        modal.classList.add('reward-modal');
+        
+        modalTitle.textContent = rewardTitle;
+        modalBody.innerHTML = `
+            <span class="reward-icon">🎉</span>
+            <span class="reward-message">${message}</span>
+            ${gameTitle ? `<span class="reward-game-title">"${gameTitle}"</span>` : ''}
+        `;
+        modalFooter.innerHTML = `
+            <button class="modal-button modal-button-ok" id="rogold-modal-ok">${okText}</button>
+        `;
+        
+        modal.classList.remove('hidden');
+        
+        document.getElementById('rogold-modal-ok').onclick = () => {
+            modal.classList.add('hidden');
+            modal.classList.remove('reward-modal');
             resolve();
         };
     });

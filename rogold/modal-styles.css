@@ -117,3 +117,66 @@
     color: #fff;
     cursor: pointer !important;
 }
+
+/* Reward Modal Styles */
+.reward-modal .modal {
+    background: linear-gradient(to bottom, #fff8dc, #ffd700);
+    border: 3px solid #b8860b;
+    box-shadow: 
+        0 0 0 1px #fff,
+        0 0 0 2px #b8860b,
+        8px 8px 0 rgba(0, 0, 0, 0.3);
+}
+
+.reward-modal .modal-header {
+    background: linear-gradient(to bottom, #ffd700, #daa520, #b8860b);
+    border-bottom: 2px solid #8b6914;
+}
+
+.reward-modal .modal-header h3 {
+    color: #4a2c00;
+    text-shadow: 1px 1px 0 #ffd700;
+}
+
+.reward-modal .modal-body {
+    text-align: center;
+    padding: 30px 20px;
+}
+
+.reward-modal .reward-icon {
+    font-size: 48px;
+    margin-bottom: 15px;
+    display: block;
+}
+
+.reward-modal .reward-amount {
+    font-size: 28px;
+    font-weight: bold;
+    color: #b8860b;
+    display: block;
+    margin: 10px 0;
+}
+
+.reward-modal .reward-game-title {
+    font-style: italic;
+    color: #4a2c00;
+    font-weight: bold;
+}
+
+.reward-modal .modal-footer {
+    justify-content: center;
+}
+
+.reward-modal .modal-button-ok {
+    background: linear-gradient(to bottom, #ffd700, #daa520);
+    color: #4a2c00;
+    border: 2px solid #8b6914;
+    box-shadow: 
+        inset 1px 1px 0 #ffe4b5,
+        inset -1px -1px 0 #b8860b;
+}
+
+.reward-modal .modal-button-ok:hover {
+    background: linear-gradient(to bottom, #daa520, #b8860b);
+    color: #fff;
+}

@@ -4,6 +4,7 @@ const translations = {
         // Navigation
         "home-link": "Home",
         "games-link": "Jogos",
+        "rewards-link": "Recompensas",
         "catalog-link": "Catálogo",
         "studio-link": "Studio",
         "profile-link": "Perfil",
@@ -91,6 +92,19 @@ const translations = {
         "edit": "Editar",
         "test": "Testar",
         "delete": "Excluir",
+
+        // Rewards Section
+        "rewards-title": "Recompensas",
+        "rewards-description": "Ganhe Goldbucks curtindo jogos e criando seus próprios jogos!",
+        "reward-like-title": "Curtir Jogos",
+        "reward-like-desc": "Ganhe 50 Goldbucks por cada jogo que você curtir pela primeira vez!",
+        "reward-create-title": "Criar Jogos",
+        "reward-create-desc": "Ganhe 200 Goldbucks por cada jogo que você criar!",
+        "rewards-earned-text": "ganhos",
+        "games-created-text": "jogos criados",
+        "reward-title": "🏆 Recompensa!",
+        "reward-like-thanks": "Obrigado por curtir!",
+        "reward-create-visits": "Seu jogo atingiu ${visits} visitas!",
 
         // Creation Board
         "creation-back": "← Voltar",
@@ -250,6 +264,7 @@ const translations = {
         // Navigation
         "home-link": "Home",
         "games-link": "Games",
+        "rewards-link": "Rewards",
         "catalog-link": "Catalog",
         "studio-link": "Studio",
         "profile-link": "Profile",
@@ -337,6 +352,19 @@ const translations = {
         "edit": "Edit",
         "test": "Test",
         "delete": "Delete",
+
+        // Rewards Section
+        "rewards-title": "Rewards",
+        "rewards-description": "Earn Goldbucks by liking games and creating your own games!",
+        "reward-like-title": "Like Games",
+        "reward-like-desc": "Earn 50 Goldbucks for each game you like for the first time!",
+        "reward-create-title": "Create Games",
+        "reward-create-desc": "Earn 200 Goldbucks for each game you create!",
+        "rewards-earned-text": "earned",
+        "games-created-text": "games created",
+        "reward-title": "🏆 Reward!",
+        "reward-like-thanks": "Thanks for liking!",
+        "reward-create-visits": "Your game reached ${visits} visits!",
 
         // Creation Board
         "creation-back": "← Back",
@@ -513,6 +541,7 @@ const translations = {
         // Navigation
         "home-link": "Inicio",
         "games-link": "Juegos",
+        "rewards-link": "Recompensas",
         "catalog-link": "Catálogo",
         "studio-link": "Estudio",
         "profile-link": "Perfil",
@@ -600,6 +629,19 @@ const translations = {
         "edit": "Editar",
         "test": "Probar",
         "delete": "Eliminar",
+
+        // Rewards Section
+        "rewards-title": "Recompensas",
+        "rewards-description": "¡Gana Goldbucks gustando de juegos y creando tus propios juegos!",
+        "reward-like-title": "Gustar de Juegos",
+        "reward-like-desc": "¡Gana 50 Goldbucks por cada juego que te guste por primera vez!",
+        "reward-create-title": "Crear Juegos",
+        "reward-create-desc": "¡Gana 200 Goldbucks por cada juego que crees!",
+        "rewards-earned-text": "ganados",
+        "games-created-text": "juegos creados",
+        "reward-title": "🏆 ¡Recompensa!",
+        "reward-like-thanks": "¡Gracias por gustar!",
+        "reward-create-visits": "¡Tu juego alcanzó ${visits} visitas!",
 
         // Creation Board
         "creation-back": "← Volver",

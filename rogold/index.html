@@ -26,6 +26,7 @@
                 <ul class="menu">
                     <li><a href="#" id="home-link" class="active">Home</a></li>
                     <li><a href="#" id="games-link">Jogos</a></li>
+                    <li><a href="#" id="rewards-link" data-translate="rewards-link">Recompensas</a></li>
                     <li><a href="#" id="catalog-link">Catálogo</a></li>
                     <li><a href="#" id="studio-link">Studio</a></li>
                     <li><a href="#" id="profile-link">Perfil</a></li>
@@ -171,6 +172,37 @@
                         </div>
                         <div class="item-detail-actions" id="item-detail-actions">
                             <!-- Buttons will be added here by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Rewards Section -->
+            <section id="rewards-section" class="hidden">
+                <div class="rewards-header">
+                    <button class="back-button" onclick="hideRewardsSection()" data-translate="back">← Voltar</button>
+                    <h2 data-translate="rewards-title">Recompensas</h2>
+                </div>
+                <div class="rewards-content">
+                    <div class="rewards-info">
+                        <p data-translate="rewards-description">Ganhe Goldbucks curtindo jogos e criando seus próprios jogos!</p>
+                    </div>
+                    <div class="rewards-grid">
+                        <div class="reward-card">
+                            <div class="reward-icon">👍</div>
+                            <h4 data-translate="reward-like-title">Curtir Jogos</h4>
+                            <p data-translate="reward-like-desc">Ganhe 50 Goldbucks por cada jogo que você curtir pela primeira vez!</p>
+                            <div class="reward-status">
+                                <span id="rewards-earned">0</span> / <span id="rewards-total">0</span> <span data-translate="rewards-earned-text">ganhos</span>
+                            </div>
+                        </div>
+                        <div class="reward-card">
+                            <div class="reward-icon">🎮</div>
+                            <h4 data-translate="reward-create-title">Criar Jogos</h4>
+                            <p data-translate="reward-create-desc">Ganhe 200 Goldbucks por cada jogo que você criar!</p>
+                            <div class="reward-status">
+                                <span id="games-created-count">0</span> <span data-translate="games-created-text">jogos criados</span>
+                            </div>
                         </div>
                     </div>
                 </div>
